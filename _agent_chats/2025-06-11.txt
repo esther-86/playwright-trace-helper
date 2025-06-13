@@ -1,0 +1,301 @@
+# AITraceRemediator
+
+An AI-powered tool that analyzes Playwright test traces and automatically fixes failing tests. The tool uses OpenAI's GPT-4 to analyze test failures and suggest fixes, then attempts to apply them and verify the solution.
+
+## Features
+
+Code should use genkit and Javascript
+Given a folder like /Users/es/Desktop/SAVE/AITraceRemediator/AITraceRemediator_artifacts/testing, go through each subfolder
+Each subfolder will have a trace.zip file
+Given a trace.zip file, analyze_trace should take in a zip file that include network, console logs, etc. and look at the Playwright trace artifacts.
+analyze_trace should
+  Determine if the cause of the failure is a test code issue or an application issue.
+  Provide a detailed, but concise, explanation of the issue.
+  If it's an application issue, provide further failure analysis steps and recommendations.
+  If it's a test code issue, provide specific, actionable fixes for test failures including an updated test code.
+  Include references to the relevant network logs and console logs to support the decision.
+- Command-line interface for easy integration, both for folder and individual trace file
+- Unit test that trace.zip output the right analysis to accumulate over time and make sure the usefulness doesn't decrease
+
+===
+
+
+
+    def find_test_files(self, results_dir: str) -> List[Dict[str, str]]:
+        """Find all trace.zip files and their corresponding test files in the results directory."""
+        test_files = []
+        results_path = Path(results_dir)
+        
+        # Walk through all subdirectories
+        for root, dirs, files in os.walk(results_path):
+            if 'trace.zip' in files:
+                # Get the test file path from the directory structure
+                # Assuming the directory structure is: test-results/test-name/trace.zip
+                test_name = Path(root).name
+                # Look for the test file in the parent directory
+                parent_dir = Path(root).parent
+                test_file = None
+                
+                # Try to find the test file
+                for file in parent_dir.glob('*.spec.js'):
+                    test_file = str(file)
+                    break
+                
+                if test_file:
+                    test_files.append({
+                        'trace_path': str(Path(root) / 'trace.zip'),
+                        'test_file': test_file,
+                        'test_name': test_name
+                    })
+        
+        return test_files
+
+    def process_results_directory(self, results_dir: str) -> Dict[str, bool]:
+        """Process all trace files in a results directory and return success status for each test."""
+        test_files = self.find_test_files(results_dir)
+        results = {}
+        
+        print(f"Found {len(test_files)} test files to process")
+        
+        for test_info in test_files:
+            print(f"\nProcessing test: {test_info['test_name']}")
+            print(f"Trace file: {test_info['trace_path']}")
+            print(f"Test file: {test_info['test_file']}")
+            
+            try:
+                success = self.remediate(test_info['trace_path'], test_info['test_file'])
+                results[test_info['test_name']] = success
+                
+                if success:
+                    print(f"✅ Successfully fixed test: {test_info['test_name']}")
+                else:
+                    print(f"❌ Failed to fix test: {test_info['test_name']}")
+                    
+            except Exception as e:
+                print(f"Error processing test {test_info['test_name']}: {str(e)}")
+                results[test_info['test_name']] = False
+        
+        return results
+
+    def analyze_trace(self, trace_path: str) -> Dict:
+        """Analyze a Playwright trace zip file and return failure information."""
+        if not trace_path.endswith('.zip'):
+            raise ValueError("Trace file must be a zip file containing Playwright trace data")
+
+        trace_data = {
+            'actions': [],
+            'network_logs': [],
+            'console_logs': [],
+            'failures': []
+        }
+
+        with zipfile.ZipFile(trace_path, 'r') as zip_ref:
+            # Extract trace.json
+            if 'trace.json' in zip_ref.namelist():
+                with zip_ref.open('trace.json') as f:
+                    trace_json = json.load(f)
+                    trace_data['actions'] = trace_json.get('actions', [])
+                    
+                    # Extract failure information from actions
+                    for action in trace_data['actions']:
+                        if action.get('error'):
+                            trace_data['failures'].append({
+                                'action': action.get('action'),
+                                'error': action.get('error'),
+                                'selector': action.get('selector'),
+                                'url': action.get('url'),
+                                'timestamp': action.get('timestamp')
+                            })
+
+            # Extract network logs
+            if 'network.log' in zip_ref.namelist():
+                with zip_ref.open('network.log') as f:
+                    for line in f:
+                        try:
+                            log_entry = json.loads(line.decode('utf-8'))
+                            trace_data['network_logs'].append(log_entry)
+                        except json.JSONDecodeError:
+                            continue
+
+            # Extract console logs
+            if 'console.log' in zip_ref.namelist():
+                with zip_ref.open('console.log') as f:
+                    for line in f:
+                        try:
+                            log_entry = json.loads(line.decode('utf-8'))
+                            trace_data['console_logs'].append(log_entry)
+                        except json.JSONDecodeError:
+                            continue
+
+            # Extract screenshots if available
+            trace_data['screenshots'] = []
+            for file in zip_ref.namelist():
+                if file.endswith('.png') and 'screenshot' in file.lower():
+                    trace_data['screenshots'].append(file)
+
+        # Enrich failure information with relevant logs
+        for failure in trace_data['failures']:
+            failure_timestamp = failure.get('timestamp')
+            if failure_timestamp:
+                # Find relevant network logs
+                failure['network_logs'] = [
+                    log for log in trace_data['network_logs']
+                    if abs(log.get('timestamp', 0) - failure_timestamp) < 1000  # Within 1 second
+                ]
+                
+                # Find relevant console logs
+                failure['console_logs'] = [
+                    log for log in trace_data['console_logs']
+                    if abs(log.get('timestamp', 0) - failure_timestamp) < 1000  # Within 1 second
+                ]
+
+        return trace_data
+
+    def generate_fix(self, failure_info: Dict) -> str:
+        """Generate a fix suggestion using OpenAI."""
+        # Create a more detailed prompt with network and console logs
+        prompt = f"""
+        Analyze this Playwright test failure and suggest a fix:
+        
+        Action: {failure_info['action']}
+        Error: {failure_info['error']}
+        Selector: {failure_info.get('selector', 'N/A')}
+        URL: {failure_info.get('url', 'N/A')}
+        
+        Relevant Network Logs:
+        {json.dumps(failure_info.get('network_logs', []), indent=2)}
+        
+        Relevant Console Logs:
+        {json.dumps(failure_info.get('console_logs', []), indent=2)}
+        
+        Provide a specific code fix that would resolve this issue. Consider:
+        1. Network timing issues
+        2. Selector stability
+        3. Page load conditions
+        4. Console errors
+        5. Network request failures
+        """
+
+        response = self.openai_client.chat.completions.create(
+            model="gpt-4-turbo-preview",
+            messages=[
+                {"role": "system", "content": """You are an expert in Playwright testing and web automation. 
+                 Determine if the cause of the failure is a test code issue or an application issue.
+                 Provide a detailed, but concise, explanation of the issue.
+                 If it's an application issue, provide further failure analysis steps and recommendations.
+                 If it's a test code issue, provide specific, actionable fixes for test failures including an updated test code.
+                 Include references to the relevant network logs and console logs to support the decision.
+                 """},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        
+        return response.choices[0].message.content
+
+    def apply_fix(self, fix_suggestion: str, test_file: str) -> bool:
+        """Apply the suggested fix to the test file."""
+        # Implementation will depend on the specific fix type
+        # This is a placeholder for the actual fix application logic
+        try:
+            # TODO: Implement actual fix application logic
+            return True
+        except Exception as e:
+            print(f"Error applying fix: {e}")
+            return False
+
+    def verify_fix(self, test_file: str) -> bool:
+        """Run the test to verify if the fix worked."""
+        try:
+            # Run the test using pytest
+            result = os.system(f"pytest {test_file} -v")
+            return result == 0
+        except Exception as e:
+            print(f"Error verifying fix: {e}")
+            return False
+      
+
+    def remediate(self, trace_path: str, test_file: str) -> bool:
+        """Main method to analyze and fix test failures."""
+        print(f"Attempt {self.current_attempt + 1} of {self.max_attempts}")
+        
+        # Analyze the trace
+        analysis = self.analyze_trace(trace_path)
+        
+        if not analysis['failures']:
+            print("No failures found in trace.")
+            return True
+        
+        # Generate and apply fixes for each failure
+        for failure in analysis['failures']:
+            fix_suggestion = self.generate_fix(failure)
+            print(f"""{trace_path}
+                  Fix suggestion: {fix_suggestion}\r\n\r\n""")
+        return True
+
+===
+
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Analyze Single Trace.zip",
+      "program": "${workspaceFolder}/src/analyze_trace.js",
+      "args": [
+        "/Users/es/Desktop/SAVE/AITraceRemediator/AITraceRemediator_artifacts/testing/ci-lumos-lumos-complete-ta-1e22c-JT---All-Screens-Site-Task--chromium-retry1/trace.zip"
+      ],
+      "console": "integratedTerminal"
+    }
+  ]
+}
+
+{
+  "explanation": "The failure appears to be due to a test code issue. The relevant log is contained in file `resources/a5776a4208cf1203b42c78abba79e23796e7249d.json`, which reports an error related to authentication: `\"No token provided\"`. \n\nExplanation:\n- Token management is typically handled within test code to authenticate requests to the application. The error message \"No token provided\" suggests that this authentication step is missing or flawed in the test setup.\n- There are multiple traces of token information in other resource files such as `resources/9ef209d99394f60985a859c1d10b7ff7ff801527.json` or `resources/daff48755b9eaa302806f29cb34f22f5c3274567.json`, indicating the presence of authentication tokens that might not be properly utilized in the test code.\n\nActionable Fix:\n1. Review the test setup to ensure the authentication tokens are correctly retrieved and included in requests that require authentication.\n2. Implement a mechanism to automatically handle token refreshment to prevent expired tokens from causing authentication failures.\n3. Verify that the test environment configuration, including all necessary endpoints and authentication flows, is consistent with the application's requirements, if applicable.\n\nFurther analysis steps are not required for the application since the issue lies within the testing process itself and not the application behavior.",
+  "referencedLogs": [
+    "resources/5a1815b71c3068dcc2778cc900b40b63588badfc.json",
+    "resources/9677c0240752c9924b2d2781da6f1ff919944349.json",
+    "resources/b6f92e550e5d15f3715a9ccaa37c626d5a21816f.json",
+    "resources/a5776a4208cf1203b42c78abba79e23796e7249d.json",
+    "resources/e6b78d9896c1102df66cecd7a74c92265cd8a544.json",
+    "resources/3df7e13d02c1dbbfb8a91d6311d9561d852f3d4d.json",
+    "resources/939626b78e0c20765dfce3c0610d16ef0c8b2463.json",
+    "resources/1279363d6e70cf007c8a9893730263c5d355cdd7.json",
+    "resources/d85b6d02e28f4b7c77dd98ba3f29d4e809458baf.json",
+    "resources/80744813c19126e32b52bdf466a9afc88625712f.json",
+    "resources/148aa4b53213e51486d4a98940a094511aea2fbc.json",
+    "resources/00e4b230589137b6bfa38c37d4e23718d86e5275.json",
+    "resources/791bf4bcd1ab00e192d88c5853dec42f885a8d95.json",
+    "resources/a30321f256c81bf92c00cf3181e16c1eeff535db.json",
+    "resources/9ef209d99394f60985a859c1d10b7ff7ff801527.json",
+    "resources/803808a594a4c735954b4bcefd9e61e99d756d4d.json",
+    "resources/11db53ff6ccf2d18a52ca2f559dff07fba0e3ebc.json",
+    "resources/2fd1048f3cb249f5c1f29afb064dcdbdfae6f075.json",
+    "resources/f5a13b3c727ce8aa6970694dd433f3074f75c759.json",
+    "resources/27252a09a9858f6a1b021dd7aef8e9e90449e778.json",
+    "resources/daff48755b9eaa302806f29cb34f22f5c3274567.json",
+    "resources/d2681c7971f086350637bad868f53d746684733e.json",
+    "resources/5a942c8d6f729471a4b89cdaebb8b8b55ee7e751.json",
+    "resources/727536df7e4c2894f60898072a02d21fc99bbbd6.json",
+    "resources/4ae797382cf14b2d0b2c6073fbe1b11ebcabc3f2.json",
+    "resources/cbe12d8d2990cf9a29fec79c9ee45323e2acdd7d.json",
+    "resources/99c78948d482bb57d24d943237a00b8476bfc107.json",
+    "resources/19fa7244923b21c2211a3d90957889b92fad17f0.json",
+    "resources/22fa6a322f372db2dcaf5ba1759d243002114725.json",
+    "resources/c5bd5d36aca815b4f98483eb17eb76db021b0f19.json",
+    "resources/d8c626707daa79c91efcf8435e62cd2f96344151.json",
+    "resources/38be8321ed226d43847d0e7dcfb381c95f11ae90.json",
+    "resources/cd9fc86ae06269f14339478fae2531a79a38128a.json",
+    "resources/25717d84d33ed9d784db4f1b42d2362cbadcbf78.json",
+    "resources/e4c457e556d70595ac66a0553cee246ffd18adc6.json",
+    "resources/9ace8f0014e89cf3ded03bf195e39304238c9303.json",
+    "resources/c93869a5dcb5d5856852ae5deb754b5f7505f643.json",
+    "resources/05d111834a7f6da467f97e3590a3433fd0537ec7.json",
+    "resources/1f68b0c6c862024153bd97138ccb27072449195c.json",
+    "resources/b47a8904ebe8fde9ec3bdeecb1bca2ac21592fd1.json"
+  ]
+}
+
+***
+Probably need to only look at the last 5 screenshots, network, and console... 
+Earlier errors are probably irrelevant to the analysis

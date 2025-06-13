@@ -1,0 +1,5 @@
+*.cpython-39.pyc
+.env
+*.cpython-312.pyc
+venv/
+node_modules

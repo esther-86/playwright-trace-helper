@@ -3,3 +3,4 @@
 *.cpython-312.pyc
 venv/
 node_modules
+.vscode/launch.json

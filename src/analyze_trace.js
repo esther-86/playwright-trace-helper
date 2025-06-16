@@ -4,52 +4,38 @@
 const fs = require('fs');
 const path = require('path');
 const AdmZip = require('adm-zip');
-const { OpenAI } = require('openai');
+const { genkit } = require('genkit');
+const { openAI, gpt4o } = require('genkitx-openai');
 
 const dotenv = require('dotenv');
 dotenv.config();
 
-// TODO: Replace with your OpenAI API key or use environment variable
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const ai = genkit({
+  plugins: [
+    openAI(),
+  ],
+  // model: gemini20Flash, // set default model
+  model: gpt4o,
+});
 
-/**
- * Analyze a Playwright trace.zip file and return a detailed analysis.
- * @param {string} zipPath - Path to the trace.zip file
- * @returns {Promise<object>} Analysis result
- */
 async function analyzeTrace(zipPath) {
-  const subfolder = path.dirname(zipPath);
-  await generateTraceHtmlReport(zipPath, path.join(subfolder, 'trace.html'));
-  return {}
 
-  if (!fs.existsSync(zipPath)) {
-    throw new Error(`File not found: ${zipPath}`);
-  }
-  const zip = new AdmZip(zipPath);
-  const entries = zip.getEntries();
-  let logs = {};
-  entries.forEach(entry => {
-    if (entry.entryName.endsWith('.log') || entry.entryName.endsWith('.json')) {
-      logs[entry.entryName] = zip.readAsText(entry);
-    }
-  });
   // Compose a prompt for GPT-4
   const prompt = `You are an expert Playwright test analyst. 
-  Given the following logs and trace artifacts, determine if the failure is due to test code or application issue. 
-  Provide a concise explanation, actionable fixes if test code, or further analysis steps if application issue. 
-  Reference relevant logs.\n\n${Object.entries(logs).map(([name, content]) => `--- ${name} ---\n${content.substring(0, 2000)}`).join('\n\n')}`;
-  const completion = await openai.chat.completions.create({
-    model: 'gpt-4o',
+  Explain the test flow from the following trace information:
+  `;
+  const completion = await ai.generate({
+    system: `You are an expert Playwright test analyst.`,
+    prompt: prompt,
     messages: [
-      { role: 'system', content: 'You are an expert Playwright test analyst.' },
-      { role: 'user', content: prompt }
     ],
-    max_tokens: 1000
+    maxTurns: 1000
   });
   return {
     explanation: completion.choices[0].message.content,
     referencedLogs: Object.keys(logs)
   };
+
 }
 
 /**
@@ -187,6 +173,7 @@ async function generateTraceHtmlReport(zipOrFolderPath, outputHtmlPath) {
         }
       }
     }
+
     return rootActions;
   }
 
@@ -417,6 +404,8 @@ async function generateTraceHtmlReport(zipOrFolderPath, outputHtmlPath) {
     fs.rmSync(tempDir, { recursive: true, force: true });
     console.log(`Cleaned up temporary folder: ${tempDir}`);
   }
+
+  return grouped;
 }
 
 // CLI interface

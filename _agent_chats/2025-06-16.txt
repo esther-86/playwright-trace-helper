@@ -1,0 +1,43 @@
+  const traceInfo = JSON.stringify(rootActions, null, 2);
+  console.log(`Trace info length: ${traceInfo.length}`);
+
+  // Let's cap the trace info to avoid overly long prompts
+  const maxTraceInfoLength = 100000; // Adjust as needed
+  const truncatedTraceInfo = traceInfo.length > maxTraceInfoLength ? traceInfo.substring(0, maxTraceInfoLength) + "\n... (truncated)" : traceInfo;
+
+  prompt = `You are an expert Playwright test analyst. 
+  Explain the test flow from the following trace information:
+  
+  ${truncatedTraceInfo}
+  `;
+
+  ===
+
+  'The trace information you provided outlines the sequence of actions and events that occur during a Playwright test. Here\'s an explanation of the test flow based on the trace information:
+
+1. **Context Setup**:
+   - The trace begins with context options which detail the browser and environment settings used in the test. The browser identified is `chromium`, and options such as viewport size, user agent, locale, etc., are specified. This setup ensures that tests run consistently across different test executions.
+
+2. **Creating a New Page**:
+   - The next action is `"browserContext.newPage"`, which signifies the creation of a new page within the browser context. This is a typical step for isolating each test case, allowing the test to control the page without interference from other tests. The page is initialized with a width of 1400 and a height of 920 pixels, and the operation takes roughly 37.775 milliseconds.
+
+3. **Page Navigation**:
+   - The test proceeds with a `"page.goto"` action to navigate to `https://cloud-test.medable.com`. This suggests that the test is likely aimed at assessing functionalities offered on this website. The navigation is monitored until the page is fully loaded (`"waitUntil": "load"`), spanning approximately 927.546 milliseconds.
+
+4. **Screencast Frames**:
+   - Several `"screencast-frame"` events occur. These frames capture the visual state of the page at specific timestamps during the test execution. This is useful for post-test review, debugging, or documentation.
+
+5. **Console Logs**:
+   - The trace contains several `"console"` log entries of type `"info"`, indicating that the page\'s JavaScript code executes commands related to flags. This might involve setting or clearing feature flags, which could be relevant to the functionality being tested.
+   - Importantly, there\'s an `"error"` console message indicating a resource failed to load due to a `401` status code, suggesting unauthorized access or incorrect authentication details while trying to access an identity resource (`https://auth-test.medable.com/v1/identities/me`).
+
+6. **Post-Navigation Snapshot**:
+   - Following the navigation, there\'s a `"frame-snapshot"` named `"after@call@26"`, capturing the state of the main page frame post-navigation. The snapshot includes the HTML structure, styles, and relevant metadata about the visited URL (`https://cloud-test.medable.com/login`). This snapshot is vital for verifying the expected page structure and content.
+
+From the above events, the test seems to validate functionalities related to activity initiation by an anonymous or unauthenticated user and potentially checks the behavior when navigating between different screens within the site. The mention of the error log hints at issues that might need attention, like authentication or authorization problems, especially since the navigation ultimately resulted in landing on a login page.
+
+The trace reflects key phases in test execution: setting up context, action execution (navigation and page interaction), state verification (console logs, screencasts, snapshots), and error detection. Each part captures an aspect of the test\'s progression and outcome, providing insight into both successful operations and encountered issues.'
+
+===
+
+>>> Didn't capture the flow correctly...

@@ -7,6 +7,7 @@ const AdmZip = require('adm-zip');
 const { genkit } = require('genkit');
 const { openAI, gpt4o } = require('genkitx-openai');
 
+// src/analyze_trace.js show that dotenv loads the OPENAI_API_KEY from a .env file. The genkitx-openai plugin will then automatically use this key. Since the user has the correct .env setup, all they need to do is run the application
 const dotenv = require('dotenv');
 dotenv.config();
 
@@ -19,21 +20,35 @@ const ai = genkit({
 });
 
 async function analyzeTrace(zipPath) {
+  let prompt; let completion;
 
-  // Compose a prompt for GPT-4
-  const prompt = `You are an expert Playwright test analyst. 
+  const subfolder = path.dirname(zipPath);
+  const rootActions = await generateTraceHtmlReport(zipPath, path.join(subfolder, 'trace.html'));
+
+  const traceInfo = JSON.stringify(rootActions, null, 2);
+  console.log(`Trace info length: ${traceInfo.length}`);
+
+  // Let's cap the trace info to avoid overly long prompts
+  const maxTraceInfoLength = 100000; // Adjust as needed
+  const truncatedTraceInfo = traceInfo.length > maxTraceInfoLength ? traceInfo.substring(0, maxTraceInfoLength) + "\n... (truncated)" : traceInfo;
+
+  prompt = `You are an expert Playwright test analyst. 
   Explain the test flow from the following trace information:
+  
+  ${truncatedTraceInfo}
   `;
-  const completion = await ai.generate({
+
+  completion = await ai.generate({
     system: `You are an expert Playwright test analyst.`,
     prompt: prompt,
     messages: [
     ],
     maxTurns: 1000
   });
+
+  const testFlow = completion.messages[completion.messages.length - 1].content[0].text
   return {
-    explanation: completion.choices[0].message.content,
-    referencedLogs: Object.keys(logs)
+    explanation: testFlow
   };
 
 }

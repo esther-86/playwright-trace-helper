@@ -122,13 +122,13 @@ async function analyzeTrace(zipPath) {
     maxTurns: 1000
   });
 
-  const testFlow = completion.messages[completion.messages.length - 1].content[0].text
+  let testFlow = completion.messages[completion.messages.length - 1].content[0].text
+  testFlow = testFlow.replace('[trace path here]', zipPath)
 
-  // Format the output by splitting on newlines and cleaning up
+  // Format the output by preserving blank lines and original spacing
   const formattedExplanation = testFlow
     .split('\n')
-    .map(line => line.trim())
-    .filter(line => line.length > 0)
+    .map(line => line.trimEnd()) // Only trim trailing whitespace, preserve leading spaces
     .join('\n');
 
   console.log(`
@@ -140,7 +140,6 @@ async function analyzeTrace(zipPath) {
   return {
     explanation: formattedExplanation
   };
-
 }
 
 /**

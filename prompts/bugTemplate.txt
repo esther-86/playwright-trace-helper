@@ -1,0 +1,38 @@
+*Context information*
+Test object: TO_BE_DETERMINED
+
+{code}
+
+{code}
+
+TRACE: N/A
+
+ 
+*Location:*
+Load more in schedule
+
+*Preconditions:*
+{code}
+{code}
+
+*Steps:*
+Given Participant launches PAW
+And submits Email and Invite Code on "Create your account" screen 
+And lands on the Schedule page having daily repetitive events displayed 
+And participant scrolls down at the bottom of the activities list
+And 'Load More' button is enabled
+When participant clicks on "Load More" button 
+Then all the repetitive events are displayed correctly after each consecutive click.
+
+
+*Actual Result:*
+Did not see Load More anymore. 
+
+*Expected Result:*
+The test is outdated because with the upgrade, Scheduler 2 is used, but we should still be able to load more because I know there are repeating events in that org.
+
+
+*Videos*: 
+N/A
+
+

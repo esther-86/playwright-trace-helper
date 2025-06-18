@@ -1,0 +1,69 @@
+Don't include any children in rootActions so that the file is the smallest root-level actions
+
+>>> Still too big for LLM context: 1.5 M
+
+Actually, only include entries that have title and params
+
+>>> 166 KB: Still length limit reach in DeepSeek: Read first 81% only...
+
+Based on the trace information provided, here's the UI flow that was executed:
+
+1. **Initialization**
+   - A new browser page was created (`browserContext.newPage`)
+
+2. **Navigation to Login Page**
+   - Navigated to `https://--test.-.com` (`page.goto`)
+   - Waited for various loading states and elements:
+     - `body:not(:empty)`
+     - Loading spinners and indicators
+     - - logo animation
+
+3. **Login Process**
+   - Located and clicked the email input field
+   - Filled in email: `-@gmail.com`
+   - Pressed Tab key to move to next field
+   - Located and clicked "Continue" button
+   - Located and clicked the password input field
+   - Filled in password: `AutoTest_123`
+   - Pressed Tab key
+   - Clicked "Sign in" button
+
+4. **Post-Login Loading**
+   - Multiple checks for loading states
+   - Waited for various UI elements to become visible
+   - Made API call to fetch site training config
+
+5. **Navigation to Participants Page**
+   - Navigated to `https://--test.-.com/site/study/1817/participants`
+   - Waited for loading states
+
+6. **Language Selection**
+   - Clicked language selector
+   - Selected "English"
+   - Confirmed language selection
+
+7. **Participant Search**
+   - Located and clicked search input field
+   - Cleared search field
+   - Typed search term: `OPP0605686185265`
+   - Attempted to click on the search result matching this ID
+     - This operation failed multiple times with timeout errors (30s timeout)
+     - The search-retry cycle repeated 8 times without success
+
+8. **Final State**
+   - The trace ends with the system still attempting the participant search operation
+
+**Key Observations:**
+- The flow successfully completed authentication
+- The main failure point was in locating/clicking the participant search result
+- Each search attempt followed the same pattern:
+  1. Click search field
+  2. Clear field
+  3. Type search term
+  4. Attempt to click result (fails after 30s)
+- The UI appeared to be loading between attempts (multiple checks for loading spinners and elements)
+
+The trace suggests the test failed because it couldn't successfully select the participant record after searching, despite multiple retries.
+
+***
+>>> From the minimal trace information, the flow can be inferred. Find a way to reduce the information and let it infer more...

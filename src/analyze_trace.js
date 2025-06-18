@@ -25,17 +25,21 @@ async function analyzeTrace(zipPath) {
   const subfolder = path.dirname(zipPath);
   const rootActions = await generateTraceHtmlReport(zipPath, path.join(subfolder, 'trace.html'));
 
-  const traceInfo = JSON.stringify(rootActions, null, 2);
+  // You want to refine the output further by only including root-level actions that have both a title and params property. This will ensure the trace_info.json file is clean and contains only the most relevant, high-level actions.
+  const traceInfo = JSON.stringify(
+    rootActions
+      .filter(action => action.title && action.params)
+      .map(({ children, ...action }) => action),
+    null,
+    2
+  );
+  fs.writeFileSync(path.join(subfolder, 'trace_info.json'), traceInfo, 'utf-8');
   console.log(`Trace info length: ${traceInfo.length}`);
 
-  // Let's cap the trace info to avoid overly long prompts
-  const maxTraceInfoLength = 100000; // Adjust as needed
-  const truncatedTraceInfo = traceInfo.length > maxTraceInfoLength ? traceInfo.substring(0, maxTraceInfoLength) + "\n... (truncated)" : traceInfo;
-
   prompt = `You are an expert Playwright test analyst. 
-  Explain the test flow from the following trace information:
+  I need the UI flow, use the following content:
   
-  ${truncatedTraceInfo}
+  ${traceInfo}
   `;
 
   completion = await ai.generate({

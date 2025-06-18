@@ -67,3 +67,6 @@ The trace suggests the test failed because it couldn't successfully select the p
 
 ***
 >>> From the minimal trace information, the flow can be inferred. Find a way to reduce the information and let it infer more...
+
+
+I need the code to be changed so that traceInfo is the smallest JSON needed to still have LLM write out the following summary and trace failure analysis

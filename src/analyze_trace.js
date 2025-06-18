@@ -19,40 +19,126 @@ const ai = genkit({
   model: gpt4o,
 });
 
+
+// Optimized filtering to include only essential data for LLM analysis
+function extractEssentialData(action) {
+  const essential = {
+    title: action.title,
+    startTime: action.startTime,
+    endTime: action.endTime,
+    duration: action.duration
+  };
+
+  // Include error information if present
+  if (action.error) {
+    essential.error = {
+      message: action.error.message,
+      stack: action.error.stack?.split('\n')[0] // Only first line of stack for brevity
+    };
+  }
+
+  // Include essential parameters based on action type
+  if (action.params) {
+    const params = {};
+
+    // For navigation actions, include URL
+    if (action.title.includes('goto') || action.title.includes('navigate')) {
+      if (action.params.url) params.url = action.params.url;
+    }
+
+    // For interaction actions, include selector and value
+    if (action.title.includes('click') || action.title.includes('fill') || action.title.includes('type')) {
+      if (action.params.selector) params.selector = action.params.selector;
+      if (action.params.value) params.value = action.params.value;
+      if (action.params.text) params.text = action.params.text;
+    }
+
+    // For wait actions, include selector and condition
+    if (action.title.includes('wait')) {
+      if (action.params.selector) params.selector = action.params.selector;
+      if (action.params.state) params.state = action.params.state;
+      if (action.params.timeout) params.timeout = action.params.timeout;
+    }
+
+    // For keyboard actions, include key
+    if (action.title.includes('press') || action.title.includes('key')) {
+      if (action.params.key) params.key = action.params.key;
+    }
+
+    // For assertions and checks, include expected values
+    if (action.title.includes('expect') || action.title.includes('assert')) {
+      if (action.params.expected) params.expected = action.params.expected;
+      if (action.params.actual) params.actual = action.params.actual;
+    }
+
+    // Only include params if we found relevant ones
+    if (Object.keys(params).length > 0) {
+      essential.params = params;
+    }
+  }
+
+  return essential;
+}
+
 async function analyzeTrace(zipPath) {
   let prompt; let completion;
 
   const subfolder = path.dirname(zipPath);
   const rootActions = await generateTraceHtmlReport(zipPath, path.join(subfolder, 'trace.html'));
 
-  // You want to refine the output further by only including root-level actions that have both a title and params property. This will ensure the trace_info.json file is clean and contains only the most relevant, high-level actions.
   const traceInfo = JSON.stringify(
     rootActions
-      .filter(action => action.title && action.params)
-      .map(({ children, ...action }) => action),
+      .filter(action => action.title && action.type === 'action')
+      .map(extractEssentialData)
+      .filter(action =>
+        // Only include actions that are likely relevant for UI flow analysis
+        action.title.includes('goto') ||
+        action.title.includes('click') ||
+        action.title.includes('fill') ||
+        action.title.includes('type') ||
+        action.title.includes('press') ||
+        action.title.includes('wait') ||
+        action.title.includes('expect') ||
+        action.title.includes('newPage') ||
+        action.title.includes('navigate') ||
+        action.error // Always include actions with errors
+      ),
     null,
     2
   );
-  fs.writeFileSync(path.join(subfolder, 'trace_info.json'), traceInfo, 'utf-8');
-  console.log(`Trace info length: ${traceInfo.length}`);
 
-  prompt = `You are an expert Playwright test analyst. 
-  I need the UI flow, use the following content:
-  
-  ${traceInfo}
-  `;
+  fs.writeFileSync(path.join(subfolder, 'trace_info.json'), traceInfo, 'utf-8');
+  console.log(`Optimized trace info length: ${traceInfo.length}`);
+
+  // Read system prompt from file
+  const systemPromptPath = path.join(__dirname, '..', 'prompts', 'systemPrompt.txt');
+  const systemPrompt = fs.readFileSync(systemPromptPath, 'utf-8');
 
   completion = await ai.generate({
-    system: `You are an expert Playwright test analyst.`,
-    prompt: prompt,
+    system: systemPrompt,
+    prompt: traceInfo,
     messages: [
     ],
     maxTurns: 1000
   });
 
   const testFlow = completion.messages[completion.messages.length - 1].content[0].text
+
+  // Format the output by splitting on newlines and cleaning up
+  const formattedExplanation = testFlow
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0)
+    .join('\n');
+
+  console.log(`
+
+    ${formattedExplanation}
+
+    `);
+
   return {
-    explanation: testFlow
+    explanation: formattedExplanation
   };
 
 }
@@ -438,10 +524,27 @@ if (require.main === module) {
     const target = args[0];
     if (fs.lstatSync(target).isDirectory()) {
       const results = await analyzeFolder(target);
-      console.log(JSON.stringify(results, null, 2));
+      // Format output for better readability
+      for (const result of results) {
+        console.log('\n' + '='.repeat(80));
+        console.log(`FOLDER: ${result.subfolder}`);
+        console.log('='.repeat(80));
+        if (result.error) {
+          console.log(`ERROR: ${result.error}`);
+        } else if (result.explanation) {
+          console.log(result.explanation);
+        }
+      }
     } else if (target.endsWith('.zip')) {
       const result = await analyzeTrace(target);
-      console.log(JSON.stringify(result, null, 2));
+      console.log('\n' + '='.repeat(80));
+      console.log('TRACE ANALYSIS RESULT');
+      console.log('='.repeat(80));
+      if (result.error) {
+        console.log(`ERROR: ${result.error}`);
+      } else if (result.explanation) {
+        console.log(result.explanation);
+      }
     } else {
       console.error('Invalid input: must be a trace.zip file or a folder containing subfolders with trace.zip');
       process.exit(1);

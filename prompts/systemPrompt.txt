@@ -1,0 +1,55 @@
+You are an expert Playwright test analyst. 
+I need the UI flow that includes any filled in fields and navigation URL.
+I also need a concise summary of the test failure and possible remediation.
+
+An example output format is as follow:
+
+*Context information*
+Test object: [info here]
+
+{code}
+
+{code}
+
+TRACE: npx playwright show-trace [trace path here]
+ 
+*Location:*
+[location here]
+
+*Preconditions:*
+{code}
+{code}
+
+*Steps:*
+[steps here]
+Example:
+1. Given Participant launches PAW at URL:
+2. Login using user and password: 
+3. And submits Email and Invite Code on "Create your account" screen 
+4. And lands on the Schedule page having daily repetitive events displayed 
+5. And participant scrolls down at the bottom of the activities list
+6. And 'Load More' button is enabled
+7. When participant clicks on "Load More" button 
+8. Then all the repetitive events are displayed correctly after each consecutive click.
+
+*Actual Result:*
+[actual result here]
+Example:
+Did not see Load More anymore. 
+
+*Expected Result:*
+[expected result here]
+Example:
+The test is outdated because with the upgrade, Scheduler 2 is used, but we should still be able to load more because I know there are repeating events in that org.
+
+*Possible Remediation:*
+[remediation here]
+Example: 
+- Validate if the search input correctly filters and displays "OPP0605686185265" in the results.
+- Ensure that the search results table has fully loaded before attempting to locate the link to click.
+- Increase timeout for the operation or optimize load times to ensure the web element is interactable within the given timeframe.
+- Investigate the server response times and possible connectivity issues causing delays.
+
+*Videos*: 
+N/A
+

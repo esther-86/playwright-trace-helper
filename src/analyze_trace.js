@@ -80,6 +80,56 @@ function extractEssentialData(action) {
   return essential;
 }
 
+// Function to extract context options from trace title
+function extractContextOptions(rootActions) {
+  const contextOptions = {
+    title: null,
+    testName: null,
+    metadata: null,
+    ticket: null,
+    tcs: null,
+    taskName: null
+  };
+
+  // Find the first action that might contain title information
+  for (const action of rootActions) {
+    if (action.title && action.title.includes('›')) {
+      contextOptions.title = action.title;
+
+      // Extract test name (part before the JSON)
+      const parts = action.title.split(' {');
+      if (parts.length > 0) {
+        contextOptions.testName = parts[0].trim();
+      }
+
+      // Extract JSON metadata if present
+      const jsonMatch = action.title.match(/\{.*\}$/);
+      if (jsonMatch) {
+        try {
+          const jsonStr = jsonMatch[0];
+          contextOptions.metadata = JSON.parse(jsonStr);
+
+          // Extract specific fields for easy access
+          if (contextOptions.metadata.ticket) {
+            contextOptions.ticket = contextOptions.metadata.ticket;
+          }
+          if (contextOptions.metadata.tcs) {
+            contextOptions.tcs = contextOptions.metadata.tcs;
+          }
+          if (contextOptions.metadata.taskName) {
+            contextOptions.taskName = contextOptions.metadata.taskName;
+          }
+        } catch (e) {
+          console.warn('Failed to parse JSON metadata from title:', e.message);
+        }
+      }
+      break; // Use the first matching title
+    }
+  }
+
+  return contextOptions;
+}
+
 async function analyzeTrace(zipPath) {
   let prompt; let completion;
 
@@ -110,6 +160,11 @@ async function analyzeTrace(zipPath) {
   fs.writeFileSync(path.join(subfolder, 'trace_info.json'), traceInfo, 'utf-8');
   console.log(`Optimized trace info length: ${traceInfo.length}`);
 
+  // Extract context options from the trace
+  const contextOptions = extractContextOptions(rootActions);
+
+  return;
+
   // Read system prompt from file
   const systemPromptPath = path.join(__dirname, '..', 'prompts', 'systemPrompt.txt');
   const systemPrompt = fs.readFileSync(systemPromptPath, 'utf-8');
@@ -138,7 +193,8 @@ async function analyzeTrace(zipPath) {
     `);
 
   return {
-    explanation: formattedExplanation
+    explanation: formattedExplanation,
+    contextOptions: contextOptions
   };
 }
 

@@ -3,3 +3,19 @@ Also, extract out context-options to a new var. Use a new function when possible
  "title": "ci-lumos/lumos-complete-task.spec.ts:10 › Validate that site user is able to start an activity with different screens in it in Visits in participant details in Lumos. {\"ticket\":\"TA-2989,@lumosTaskCompletion\",\"tcs\":\"PJT-T507,SSP-T20,SSP-T21,SSP-T22,SSP-T23,SSP-T24,SSP-T25,SSP-T26,SSP-T27,SSP-T28\",\"taskName\":\"PJT - All Screens Site Task\"}"
 
 into a var containing JSON object so that we can query the tcs directly
+
+On line 166, also, extract out the last x frame-snapshot from rootActions. Use a new function when possible.
+Need the ones with html
+    "html": [
+      "HTML",
+      {
+        "lang": "en",
+        "data-headlessui-focus-visible": ""
+      },
+      [
+extractHtmlSnapshots should first put all the timestamp latest first. Then, when it found x, stop execution.
+
+Lines 249 - put the following in a string to be sent to LLM
+so that LLM can describe the page and note any errors or problems on the html
+        
+Call LLM to describe the page content for each snapshot and note if there are any error on the page.

@@ -130,11 +130,184 @@ function extractContextOptions(rootActions) {
   return contextOptions;
 }
 
+async function analyzeHtmlSnapshots(htmlSnapshots) {
+
+  // Prepare HTML content for LLM analysis
+  let htmlContentForLLM = '';
+  htmlSnapshots.forEach((snapshot, index) => {
+    console.log(`\n=== HTML Snapshot ${index + 1} ===`);
+    console.log(`Source: ${snapshot.source}`);
+    console.log(`Action: ${snapshot.actionTitle}`);
+
+    htmlContentForLLM += `\n=== HTML Snapshot ${index + 1} ===\n`;
+    htmlContentForLLM += `Source: ${snapshot.source}\n`;
+    htmlContentForLLM += `Action: ${snapshot.actionTitle}\n`;
+    htmlContentForLLM += `Timestamp: ${snapshot.timestamp}\n`;
+
+    if (snapshot.html) {
+      const htmlString = JSON.stringify(snapshot.html, null, 2);
+      console.log('HTML DOM:', htmlString);
+      htmlContentForLLM += `HTML Content:\n${htmlString}\n`;
+    }
+    if (snapshot.attachment) {
+      console.log('Attachment:', snapshot.attachment);
+      htmlContentForLLM += `Attachment: ${JSON.stringify(snapshot.attachment, null, 2)}\n`;
+    }
+    htmlContentForLLM += '\n' + '='.repeat(50) + '\n';
+  });
+
+  // Send HTML content to LLM for analysis
+  if (htmlContentForLLM.trim()) {
+    console.log('\nSending HTML content to LLM for analysis...');
+
+    const htmlAnalysis = await ai.generate({
+      system: `You are an expert web developer and UI/UX analyst. Analyze the provided HTML content and describe:
+1. What page or screen is being displayed
+2. Key UI elements visible (buttons, forms, inputs, text, etc.)
+3. Any error messages, warnings, or issues visible on the page
+4. The overall state of the application
+5. Any loading states, modals, or overlays present
+6. Form validation states or error indicators
+7. Navigation elements and their state
+
+Be concise but thorough in your analysis. Focus on identifying any problems or errors that might indicate test failures.`,
+      prompt: `Please analyze the following HTML content from a Playwright test trace and describe what you see. 
+      Pay special attention to any errors, warnings, or issues that might be visible on the page:
+      
+      ${htmlContentForLLM}`,
+      messages: [],
+      maxTurns: 1
+    });
+
+    const analysis = htmlAnalysis.messages[htmlAnalysis.messages.length - 1].content[0].text;
+    console.log('\n=== LLM HTML Analysis ===');
+    console.log(analysis);
+  }
+}
+
+// Function to extract HTML content from rootActions
+function extractHtmlSnapshots(rootActions, numSnapshots = 3) {
+  const htmlSnapshots = [];
+
+  // Sort rootActions by timestamp (latest first) before processing
+  const sortedRootActions = [...rootActions].sort((a, b) => {
+    const timeA = a.timestamp || a.startTime || a.monotonicTime || 0;
+    const timeB = b.timestamp || b.startTime || b.monotonicTime || 0;
+    return timeB - timeA;
+  });
+
+  // Recursively search through all actions and their children for HTML content
+  function findHtml(actions, depth = 0) {
+    for (const action of actions) {
+      // Stop if we already found enough snapshots
+      if (htmlSnapshots.length >= numSnapshots) {
+        return true; // Signal to stop processing
+      }
+
+      // Debug: log action types and properties to understand the structure
+      if (depth === 0) {
+        // console.log(`Action type: ${action.type}, title: ${action.title}`);
+        if (action.type !== 'action') {
+          // console.log(`Non-action properties:`, Object.keys(action));
+        }
+      }
+
+      // Look for HTML content in various possible locations
+      if (action.html) {
+        htmlSnapshots.push({
+          timestamp: action.timestamp || action.startTime,
+          monotonicTime: action.monotonicTime,
+          html: action.html,
+          actionTitle: action.title,
+          source: 'direct_html'
+        });
+        // console.log(`Found HTML in direct property for action: ${action.title}`);
+
+        // Check if we've found enough after adding this one
+        if (htmlSnapshots.length >= numSnapshots) {
+          return true; // Signal to stop processing
+        }
+      }
+
+      // Look for HTML content in attachments
+      if (action.attachments) {
+        for (const attachment of action.attachments) {
+          if (htmlSnapshots.length >= numSnapshots) {
+            return true; // Signal to stop processing
+          }
+
+          // console.log(`Checking attachment: ${attachment.name}, contentType: ${attachment.contentType}`);
+          if (attachment.name === 'trace' ||
+            attachment.name === 'dom-snapshot' ||
+            attachment.name === 'page' ||
+            (attachment.contentType && attachment.contentType.includes('html')) ||
+            (attachment.contentType && attachment.contentType.includes('json'))) {
+            htmlSnapshots.push({
+              timestamp: action.timestamp || action.startTime,
+              monotonicTime: action.monotonicTime,
+              attachment: attachment,
+              actionTitle: action.title,
+              source: 'attachment'
+            });
+            // console.log(`Found HTML attachment: ${attachment.name}`);
+
+            // Check if we've found enough after adding this one
+            if (htmlSnapshots.length >= numSnapshots) {
+              return true; // Signal to stop processing
+            }
+          }
+        }
+      }
+
+      // Look for DOM or page content in other properties
+      if (action.page || action.dom || action.snapshot) {
+        htmlSnapshots.push({
+          timestamp: action.timestamp || action.startTime,
+          monotonicTime: action.monotonicTime,
+          html: action.page || action.dom || action.snapshot,
+          actionTitle: action.title,
+          source: 'page_dom_snapshot'
+        });
+        // console.log(`Found HTML in page/dom/snapshot property for action: ${action.title}`);
+
+        // Check if we've found enough after adding this one
+        if (htmlSnapshots.length >= numSnapshots) {
+          return true; // Signal to stop processing
+        }
+      }
+
+      // Search in children if they exist and we haven't found enough snapshots
+      if (action.children && action.children.length > 0 && htmlSnapshots.length < numSnapshots) {
+        const shouldStop = findHtml(action.children, depth + 1);
+        if (shouldStop) {
+          return true; // Propagate the stop signal up
+        }
+      }
+    }
+
+    return false; // Continue processing
+  }
+
+  // If looking for 3 HTML snapshots:
+  // - Finds 1st HTML action → continues
+  // - Finds 2nd HTML action → continues  
+  // - Finds 3rd HTML action → STOPS immediately
+  // - Never processes remaining actions/children
+  findHtml(sortedRootActions);
+
+  console.log(`Found ${htmlSnapshots.length} HTML snapshots (stopped after finding ${numSnapshots} or reaching end)`);
+
+  return htmlSnapshots;
+}
+
 async function analyzeTrace(zipPath) {
   let prompt; let completion;
 
   const subfolder = path.dirname(zipPath);
   const rootActions = await generateTraceHtmlReport(zipPath, path.join(subfolder, 'trace.html'));
+
+  // Extract context options from the trace
+  const contextOptions = extractContextOptions(rootActions);
 
   const traceInfo = JSON.stringify(
     rootActions
@@ -160,11 +333,16 @@ async function analyzeTrace(zipPath) {
   fs.writeFileSync(path.join(subfolder, 'trace_info.json'), traceInfo, 'utf-8');
   console.log(`Optimized trace info length: ${traceInfo.length}`);
 
-  // Extract context options from the trace
-  const contextOptions = extractContextOptions(rootActions);
+  // 6/20/2025 - disabled analyzeHtmlSnapshots for now: Saw that the HTML that has the "We were unable to process your request, please try again later" was in the trace,
+  // but in the middle, not the last few snapshots as desired, so the LLM analysis was not useful.
+  // Extract HTML content from rootActions
+  // const htmlSnapshots = extractHtmlSnapshots(rootActions, 3);
+  // await analyzeHtmlSnapshots(htmlSnapshots);
+
 
   return;
 
+  // DO NOT DELETE.
   // Read system prompt from file
   const systemPromptPath = path.join(__dirname, '..', 'prompts', 'systemPrompt.txt');
   const systemPrompt = fs.readFileSync(systemPromptPath, 'utf-8');

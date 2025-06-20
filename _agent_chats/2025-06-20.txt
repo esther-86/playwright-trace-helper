@@ -48,3 +48,8 @@ You're absolutely right! The function is extracting the internal Playwright stac
 Let me fix this by modifying the function to extract the correct stack trace:
 
 Extract trace using test.trace from the unzipped folder instead of the rootActions. Convert extract_stack_trace.py to composeStackTraceFromFirstError
+
+===
+
+I want to save the contextOptions and stackTrace. If going through a folder and a similar stacktrace exists, don't reanalyze and just say that it's the same root problem as the saved context options
+save for similarity detection to not query LLM multiple times for same stacktrace

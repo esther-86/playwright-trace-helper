@@ -11,6 +11,9 @@ const { openAI, gpt4o } = require('genkitx-openai');
 const dotenv = require('dotenv');
 dotenv.config();
 
+// Add crypto for generating hashes
+const crypto = require('crypto');
+
 const ai = genkit({
   plugins: [
     openAI(),
@@ -130,8 +133,202 @@ function extractContextOptions(rootActions) {
   return contextOptions;
 }
 
+// Function to normalize stack trace for comparison
+function normalizeStackTrace(stackTrace) {
+  if (!stackTrace) return '';
+
+  return stackTrace
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0) // Remove empty lines
+    .map(line => {
+      // Keep error messages and stack trace lines, but normalize file paths
+      if (line.startsWith('TimeoutError:') || line.startsWith('Error:')) {
+        // Normalize timeout values and selectors for comparison
+        return line.replace(/\d+ms/g, 'XXXms')
+          .replace(/"[^"]*"/g, '"SELECTOR"')
+          .replace(/'[^']*'/g, "'SELECTOR'");
+      }
+      if (line.startsWith('Call log:')) {
+        return line;
+      }
+      if (line.startsWith('- ') || line.startsWith('waiting for')) {
+        // Normalize selectors in waiting conditions
+        return line.replace(/locator\('[^']*'\)/g, "locator('SELECTOR')")
+          .replace(/locator\("[^"]*"\)/g, 'locator("SELECTOR")')
+          .replace(/"[^"]*"/g, '"SELECTOR"')
+          .replace(/'[^']*'/g, "'SELECTOR'");
+      }
+      if (line.startsWith('at ')) {
+        // Normalize file paths and line numbers
+        return line.replace(/\/[^:]+:/g, '/PATH:')
+          .replace(/:\d+:\d+/g, ':XX:XX')
+          .replace(/"[^"]*"/g, '"SELECTOR"')
+          .replace(/'[^']*'/g, "'SELECTOR'");
+      }
+      return line;
+    })
+    .join('\n');
+}
+
+// Function to generate a hash for similar stacktrace detection
+function generateStackTraceHash(stackTrace) {
+  const normalized = normalizeStackTrace(stackTrace);
+  return crypto.createHash('md5').update(normalized).digest('hex');
+}
+
+// Function to save context options and stack trace
+function saveAnalysisContext(contextOptions, stackTrace, folderPath) {
+  const contextData = {
+    contextOptions,
+    stackTrace,
+    stackTraceHash: generateStackTraceHash(stackTrace),
+    folderPath,
+    timestamp: new Date().toISOString(),
+    normalizedStackTrace: normalizeStackTrace(stackTrace)
+  };
+
+  const contextFile = path.join(path.dirname(folderPath), 'analysis_contexts.json');
+  let contexts = [];
+
+  // Load existing contexts if file exists
+  if (fs.existsSync(contextFile)) {
+    try {
+      const existingData = fs.readFileSync(contextFile, 'utf-8');
+      contexts = JSON.parse(existingData);
+    } catch (error) {
+      console.warn('Failed to load existing contexts:', error.message);
+      contexts = [];
+    }
+  }
+
+  // Add new context
+  contexts.push(contextData);
+
+  // Save updated contexts
+  try {
+    fs.writeFileSync(contextFile, JSON.stringify(contexts, null, 2), 'utf-8');
+    console.log(`Saved analysis context to: ${contextFile}`);
+  } catch (error) {
+    console.error('Failed to save analysis context:', error.message);
+  }
+
+  return contextData;
+}
+
+// Function to find similar stacktrace in saved contexts
+function findSimilarStackTrace(stackTrace, folderPath) {
+  const currentHash = generateStackTraceHash(stackTrace);
+  const contextFile = path.join(path.dirname(folderPath), 'analysis_contexts.json');
+
+  if (!fs.existsSync(contextFile)) {
+    return null;
+  }
+
+  try {
+    const existingData = fs.readFileSync(contextFile, 'utf-8');
+    const contexts = JSON.parse(existingData);
+
+    // Find exact hash match first
+    const exactMatch = contexts.find(context => context.stackTraceHash === currentHash);
+    if (exactMatch) {
+      return {
+        type: 'exact',
+        context: exactMatch,
+        similarity: 1.0
+      };
+    }
+
+    // Find similar stacktraces by comparing normalized versions
+    const currentNormalized = normalizeStackTrace(stackTrace);
+
+    for (const context of contexts) {
+      const similarity = calculateStackTraceSimilarity(currentNormalized, context.normalizedStackTrace);
+      if (similarity > 0.8) { // 80% similarity threshold
+        return {
+          type: 'similar',
+          context: context,
+          similarity: similarity
+        };
+      }
+    }
+
+    return null;
+  } catch (error) {
+    console.warn('Failed to load existing contexts for comparison:', error.message);
+    return null;
+  }
+}
+
+// Function to calculate similarity between two normalized stack traces
+function calculateStackTraceSimilarity(stackTrace1, stackTrace2) {
+  if (!stackTrace1 || !stackTrace2) return 0;
+
+  const lines1 = stackTrace1.split('\n').filter(line => line.trim());
+  const lines2 = stackTrace2.split('\n').filter(line => line.trim());
+
+  if (lines1.length === 0 || lines2.length === 0) return 0;
+
+  let matchingLines = 0;
+  const maxLines = Math.max(lines1.length, lines2.length);
+
+  // Compare each line
+  for (let i = 0; i < Math.min(lines1.length, lines2.length); i++) {
+    if (lines1[i] === lines2[i]) {
+      matchingLines++;
+    } else {
+      // Check for partial matches (e.g., same error type, same function calls)
+      const similarity = calculateLineSimilarity(lines1[i], lines2[i]);
+      if (similarity > 0.7) {
+        matchingLines += similarity;
+      }
+    }
+  }
+
+  return matchingLines / maxLines;
+}
+
+// Function to calculate similarity between two lines
+function calculateLineSimilarity(line1, line2) {
+  if (line1 === line2) return 1.0;
+
+  // Extract key parts for comparison
+  const extractKeyParts = (line) => {
+    // Extract error types, function names, etc.
+    const parts = [];
+
+    // Error type
+    if (line.includes('Error:')) {
+      parts.push(line.split('Error:')[0] + 'Error');
+    }
+
+    // Function calls in stack trace
+    if (line.includes('at ')) {
+      const atMatch = line.match(/at\s+([^(]+)/);
+      if (atMatch) {
+        parts.push(atMatch[1].trim());
+      }
+    }
+
+    // Selectors and waiting conditions
+    if (line.includes('waiting for')) {
+      parts.push('waiting_for');
+    }
+
+    return parts;
+  };
+
+  const parts1 = extractKeyParts(line1);
+  const parts2 = extractKeyParts(line2);
+
+  if (parts1.length === 0 || parts2.length === 0) return 0;
+
+  const commonParts = parts1.filter(part => parts2.includes(part));
+  return commonParts.length / Math.max(parts1.length, parts2.length);
+}
+
 async function analyzeTrace(zipPath) {
-  let prompt; let completion;
+  let prompt; let completion; let explanation;
 
   const subfolder = path.dirname(zipPath);
   const result = await generateTraceHtmlReport(zipPath, path.join(subfolder, 'trace.html'));
@@ -145,10 +342,48 @@ async function analyzeTrace(zipPath) {
     return timeB - timeA;
   });
 
-  const stackTrace = composeStackTraceFromFirstError(traceFolder);
-
   // Extract context options from the trace
   const contextOptions = extractContextOptions(latestFirstRootActions);
+
+  const stackTrace = composeStackTraceFromFirstError(traceFolder);
+
+  // Check if we have a similar stacktrace already analyzed
+  const similarMatch = findSimilarStackTrace(stackTrace, subfolder);
+
+  if (similarMatch) {
+    const matchType = similarMatch.type === 'exact' ? 'identical' : 'similar';
+    const similarityPercent = Math.round(similarMatch.similarity * 100);
+
+    explanation = `
+
+    🔍 Found ${matchType} stacktrace (${similarityPercent}% match)
+    ⏭️ Original analysis: ${similarMatch.context.contextOptions.tcs} [${similarMatch.context.folderPath}]
+    ${similarMatch.context.contextOptions.tcs}
+    ${similarMatch.context.explanation}
+    
+    `;
+
+    // Clean up temporary folder
+    if (traceFolder) {
+      fs.rmSync(traceFolder, { recursive: true, force: true });
+      console.log(`\n🧹 Cleaned up temporary folder: ${traceFolder}`);
+    }
+
+    return {
+      skipped: true,
+      explanation: explanation,
+      similarContext: similarMatch.context,
+      contextOptions: contextOptions,
+      stackTrace: stackTrace
+    };
+  }
+
+  // No similar stacktrace found, proceed with analysis and save context
+  console.log('\n🆕 New stacktrace detected - proceeding with analysis');
+
+  // Save the context for future comparisons
+  const savedContext = saveAnalysisContext(contextOptions, stackTrace, subfolder);
+  console.log(`💾 Saved context with hash: ${savedContext.stackTraceHash.substring(0, 8)}...`);
 
   const traceInfo = JSON.stringify(
     rootActions
@@ -185,8 +420,6 @@ async function analyzeTrace(zipPath) {
     console.log(`Cleaned up temporary folder: ${traceFolder}`);
   }
 
-  return;
-
   // DO NOT DELETE.
   // Read system prompt from file
   const systemPromptPath = path.join(__dirname, '..', 'prompts', 'systemPrompt.txt');
@@ -204,20 +437,26 @@ async function analyzeTrace(zipPath) {
   testFlow = testFlow.replace('[trace path here]', zipPath)
 
   // Format the output by preserving blank lines and original spacing
-  const formattedExplanation = testFlow
+  explanation = testFlow
     .split('\n')
     .map(line => line.trimEnd()) // Only trim trailing whitespace, preserve leading spaces
     .join('\n');
 
-  console.log(`
+  explanation = `
 
-    ${formattedExplanation}
+${explanation}
 
-    `);
+*Stack Trace:*
+${stackTrace}
+
+  `
 
   return {
-    explanation: formattedExplanation,
-    contextOptions: contextOptions
+    skipped: false,
+    explanation: explanation,
+    contextOptions: contextOptions,
+    stackTrace: stackTrace,
+    savedContext: savedContext
   };
 }
 
@@ -231,17 +470,49 @@ async function analyzeFolder(folderPath) {
   const subfolders = fs.readdirSync(folderPath, { withFileTypes: true })
     .filter(dirent => dirent.isDirectory())
     .map(dirent => path.join(folderPath, dirent.name));
+
+  let totalAnalyzed = 0;
+  let totalSkipped = 0;
+  let totalErrors = 0;
+
   for (const subfolder of subfolders) {
     const traceZip = path.join(subfolder, 'trace.zip');
     if (fs.existsSync(traceZip)) {
       try {
         const analysis = await analyzeTrace(traceZip);
+        console.log(`
+          
+          ${analysis.explanation}
+          
+        `);
         results.push({ subfolder, ...analysis });
+
+        if (analysis.skipped) {
+          totalSkipped++;
+        } else {
+          totalAnalyzed++;
+        }
       } catch (err) {
         results.push({ subfolder, error: err.message });
+        totalErrors++;
       }
     }
   }
+
+  // Display summary
+  console.log('\n' + '='.repeat(80));
+  console.log('📊 ANALYSIS SUMMARY');
+  console.log('='.repeat(80));
+  console.log(`📈 Total folders processed: ${results.length}`);
+  console.log(`🆕 New analyses performed: ${totalAnalyzed}`);
+  console.log(`⏭️  Skipped (similar stacktraces): ${totalSkipped}`);
+  console.log(`❌ Errors encountered: ${totalErrors}`);
+
+  if (totalSkipped > 0) {
+    console.log('\n💡 Tip: Similar stacktraces were detected and skipped to avoid redundant analysis.');
+    console.log('   Check the analysis_contexts.json file to review saved contexts.');
+  }
+
   return results;
 }
 
@@ -1001,17 +1272,92 @@ function composeStackTraceFromFirstError(traceFolder) {
   return stackTrace;
 }
 
+// Utility function to list all saved analysis contexts
+function listSavedContexts(folderPath) {
+  const contextFile = path.join(folderPath, 'analysis_contexts.json');
+
+  if (!fs.existsSync(contextFile)) {
+    console.log('No saved analysis contexts found.');
+    return [];
+  }
+
+  try {
+    const existingData = fs.readFileSync(contextFile, 'utf-8');
+    const contexts = JSON.parse(existingData);
+
+    console.log('\n📋 SAVED ANALYSIS CONTEXTS');
+    console.log('='.repeat(60));
+
+    contexts.forEach((context, index) => {
+      console.log(`\n${index + 1}. Hash: ${context.stackTraceHash.substring(0, 12)}...`);
+      console.log(`   Folder: ${context.folderPath}`);
+      console.log(`   Timestamp: ${context.timestamp}`);
+      if (context.contextOptions) {
+        console.log(`   Test: ${context.contextOptions.testName || 'N/A'}`);
+        console.log(`   Ticket: ${context.contextOptions.ticket || 'N/A'}`);
+        console.log(`   TCS: ${context.contextOptions.tcs || 'N/A'}`);
+      }
+    });
+
+    return contexts;
+  } catch (error) {
+    console.error('Failed to load saved contexts:', error.message);
+    return [];
+  }
+}
+
+// Utility function to clear saved analysis contexts
+function clearSavedContexts(folderPath) {
+  const contextFile = path.join(folderPath, 'analysis_contexts.json');
+
+  if (fs.existsSync(contextFile)) {
+    try {
+      fs.unlinkSync(contextFile);
+      console.log('✅ Cleared all saved analysis contexts.');
+    } catch (error) {
+      console.error('❌ Failed to clear saved contexts:', error.message);
+    }
+  } else {
+    console.log('No saved contexts file found.');
+  }
+}
+
 // CLI interface
 if (require.main === module) {
   const args = process.argv.slice(2);
   if (args.length === 0) {
     console.log('Usage: node analyze_trace.js <trace.zip | folder>');
+    console.log('       node analyze_trace.js --list-contexts <folder>');
+    console.log('       node analyze_trace.js --clear-contexts <folder>');
     process.exit(1);
   }
+
   (async () => {
-    const target = args[0];
-    if (fs.lstatSync(target).isDirectory()) {
-      const results = await analyzeFolder(target);
+    const command = args[0];
+    const target = args[1];
+
+    if (command === '--list-contexts') {
+      if (!target) {
+        console.error('Please specify a folder path to list contexts from');
+        process.exit(1);
+      }
+      listSavedContexts(target);
+      return;
+    }
+
+    if (command === '--clear-contexts') {
+      if (!target) {
+        console.error('Please specify a folder path to clear contexts from');
+        process.exit(1);
+      }
+      clearSavedContexts(target);
+      return;
+    }
+
+    // Original analysis functionality
+    const analysisTarget = command;
+    if (fs.lstatSync(analysisTarget).isDirectory()) {
+      const results = await analyzeFolder(analysisTarget);
       // Format output for better readability
       for (const result of results) {
         console.log('\n' + '='.repeat(80));
@@ -1019,19 +1365,29 @@ if (require.main === module) {
         console.log('='.repeat(80));
         if (result.error) {
           console.log(`ERROR: ${result.error}`);
+        } else if (result.skipped) {
+          console.log(`Original analysis: ${result.similarContext.folderPath}`);
+          console.log(`SKIPPED: 
+              ${result.explanation}`);
         } else if (result.explanation) {
           console.log(result.explanation);
+        } else {
+          console.log('Analysis completed - no explanation generated');
         }
       }
-    } else if (target.endsWith('.zip')) {
-      const result = await analyzeTrace(target);
+    } else if (analysisTarget.endsWith('.zip')) {
+      const result = await analyzeTrace(analysisTarget);
       console.log('\n' + '='.repeat(80));
       console.log('TRACE ANALYSIS RESULT');
       console.log('='.repeat(80));
       if (result.error) {
         console.log(`ERROR: ${result.error}`);
+      } else if (result.skipped) {
+        console.log(`SKIPPED: ${result.explanation}`);
       } else if (result.explanation) {
         console.log(result.explanation);
+      } else {
+        console.log('Analysis completed - no explanation generated');
       }
     } else {
       console.error('Invalid input: must be a trace.zip file or a folder containing subfolders with trace.zip');
@@ -1040,4 +1396,14 @@ if (require.main === module) {
   })();
 }
 
-module.exports = { analyzeTrace, analyzeFolder, generateTraceHtmlReport }; 
+module.exports = {
+  analyzeTrace,
+  analyzeFolder,
+  generateTraceHtmlReport,
+  listSavedContexts,
+  clearSavedContexts,
+  findSimilarStackTrace,
+  normalizeStackTrace,
+  generateStackTraceHash,
+  calculateStackTraceSimilarity
+}; 

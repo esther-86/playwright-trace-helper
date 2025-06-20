@@ -17,5 +17,33 @@ extractHtmlSnapshots should first put all the timestamp latest first. Then, when
 
 Lines 249 - put the following in a string to be sent to LLM
 so that LLM can describe the page and note any errors or problems on the html
-        
+
 Call LLM to describe the page content for each snapshot and note if there are any error on the page.
+
+===
+
+From the first latestFirstRootActions, compose the stack trace where the error occured
+
+The data is here:
+/Users/huonglai/Desktop/SAVE/AITraceRemediator/AITraceRemediator_artifacts/testing/ci-lumos-lumos-complete-ta-1e22c-JT---All-Screens-Site-Task--chromium-retry1
+
+Use code to do this.
+The trace should be something like
+
+   TimeoutError: locator.click: Timeout 30000ms exceeded.
+   Call log:
+     - waiting for locator('//table//tr[contains(., "OPP0605686185265") or descendant::text()[contains(., "OPP0605686185265")]]//a[contains(@class,"Link__StyledRouterLink") or contains(@class,"nucleus")]').first()
+
+       at Function.clickLinkForTableRowWithText (/builds/product/web/apps/playwright/Flows/TableFlows.ts:73:36)
+       at /builds/product/web/apps/playwright/Flows/LumosFlows.ts:166:27
+       at Function.pollUntil (/builds/product/web/apps/medable-shared/Helpers/TimerHelper.ts:35:21)
+       at Function.selectParticipantId (/builds/product/web/apps/playwright/Flows/LumosFlows.ts:160:5)
+       at Function.loginToLumosAndSelectParticipantId (/builds/product/web/apps/playwright/Flows/LumosFlows.ts:185:7)
+       at ThisTest._inviteOnboardRegisterLoginParticipantViaApi (/builds/product/web/apps/playwright/Fixtures/fixture-medable.ts:672:19)
+       at ThisTest.initializeTestWithOnboardedParticipant (/builds/product/web/apps/playwright/Fixtures/fixture-medable.ts:630:13)
+       at /builds/product/web/apps/playwright/tests-playwright/ci-lumos/lumos-complete-task.spec.ts:13:38
+
+
+You're absolutely right! The function is extracting the internal Playwright stack trace instead of the test code stack trace. The issue is that the error stack in the trace data contains both the internal Playwright framework calls and the actual test code calls, but we need to filter out the Playwright internals and show only the test-related stack trace.
+Let me fix this by modifying the function to extract the correct stack trace:
+

@@ -130,184 +130,24 @@ function extractContextOptions(rootActions) {
   return contextOptions;
 }
 
-async function analyzeHtmlSnapshots(htmlSnapshots) {
-
-  // Prepare HTML content for LLM analysis
-  let htmlContentForLLM = '';
-  htmlSnapshots.forEach((snapshot, index) => {
-    console.log(`\n=== HTML Snapshot ${index + 1} ===`);
-    console.log(`Source: ${snapshot.source}`);
-    console.log(`Action: ${snapshot.actionTitle}`);
-
-    htmlContentForLLM += `\n=== HTML Snapshot ${index + 1} ===\n`;
-    htmlContentForLLM += `Source: ${snapshot.source}\n`;
-    htmlContentForLLM += `Action: ${snapshot.actionTitle}\n`;
-    htmlContentForLLM += `Timestamp: ${snapshot.timestamp}\n`;
-
-    if (snapshot.html) {
-      const htmlString = JSON.stringify(snapshot.html, null, 2);
-      console.log('HTML DOM:', htmlString);
-      htmlContentForLLM += `HTML Content:\n${htmlString}\n`;
-    }
-    if (snapshot.attachment) {
-      console.log('Attachment:', snapshot.attachment);
-      htmlContentForLLM += `Attachment: ${JSON.stringify(snapshot.attachment, null, 2)}\n`;
-    }
-    htmlContentForLLM += '\n' + '='.repeat(50) + '\n';
-  });
-
-  // Send HTML content to LLM for analysis
-  if (htmlContentForLLM.trim()) {
-    console.log('\nSending HTML content to LLM for analysis...');
-
-    const htmlAnalysis = await ai.generate({
-      system: `You are an expert web developer and UI/UX analyst. Analyze the provided HTML content and describe:
-1. What page or screen is being displayed
-2. Key UI elements visible (buttons, forms, inputs, text, etc.)
-3. Any error messages, warnings, or issues visible on the page
-4. The overall state of the application
-5. Any loading states, modals, or overlays present
-6. Form validation states or error indicators
-7. Navigation elements and their state
-
-Be concise but thorough in your analysis. Focus on identifying any problems or errors that might indicate test failures.`,
-      prompt: `Please analyze the following HTML content from a Playwright test trace and describe what you see. 
-      Pay special attention to any errors, warnings, or issues that might be visible on the page:
-      
-      ${htmlContentForLLM}`,
-      messages: [],
-      maxTurns: 1
-    });
-
-    const analysis = htmlAnalysis.messages[htmlAnalysis.messages.length - 1].content[0].text;
-    console.log('\n=== LLM HTML Analysis ===');
-    console.log(analysis);
-  }
-}
-
-// Function to extract HTML content from rootActions
-function extractHtmlSnapshots(rootActions, numSnapshots = 3) {
-  const htmlSnapshots = [];
-
-  // Sort rootActions by timestamp (latest first) before processing
-  const sortedRootActions = [...rootActions].sort((a, b) => {
-    const timeA = a.timestamp || a.startTime || a.monotonicTime || 0;
-    const timeB = b.timestamp || b.startTime || b.monotonicTime || 0;
-    return timeB - timeA;
-  });
-
-  // Recursively search through all actions and their children for HTML content
-  function findHtml(actions, depth = 0) {
-    for (const action of actions) {
-      // Stop if we already found enough snapshots
-      if (htmlSnapshots.length >= numSnapshots) {
-        return true; // Signal to stop processing
-      }
-
-      // Debug: log action types and properties to understand the structure
-      if (depth === 0) {
-        // console.log(`Action type: ${action.type}, title: ${action.title}`);
-        if (action.type !== 'action') {
-          // console.log(`Non-action properties:`, Object.keys(action));
-        }
-      }
-
-      // Look for HTML content in various possible locations
-      if (action.html) {
-        htmlSnapshots.push({
-          timestamp: action.timestamp || action.startTime,
-          monotonicTime: action.monotonicTime,
-          html: action.html,
-          actionTitle: action.title,
-          source: 'direct_html'
-        });
-        // console.log(`Found HTML in direct property for action: ${action.title}`);
-
-        // Check if we've found enough after adding this one
-        if (htmlSnapshots.length >= numSnapshots) {
-          return true; // Signal to stop processing
-        }
-      }
-
-      // Look for HTML content in attachments
-      if (action.attachments) {
-        for (const attachment of action.attachments) {
-          if (htmlSnapshots.length >= numSnapshots) {
-            return true; // Signal to stop processing
-          }
-
-          // console.log(`Checking attachment: ${attachment.name}, contentType: ${attachment.contentType}`);
-          if (attachment.name === 'trace' ||
-            attachment.name === 'dom-snapshot' ||
-            attachment.name === 'page' ||
-            (attachment.contentType && attachment.contentType.includes('html')) ||
-            (attachment.contentType && attachment.contentType.includes('json'))) {
-            htmlSnapshots.push({
-              timestamp: action.timestamp || action.startTime,
-              monotonicTime: action.monotonicTime,
-              attachment: attachment,
-              actionTitle: action.title,
-              source: 'attachment'
-            });
-            // console.log(`Found HTML attachment: ${attachment.name}`);
-
-            // Check if we've found enough after adding this one
-            if (htmlSnapshots.length >= numSnapshots) {
-              return true; // Signal to stop processing
-            }
-          }
-        }
-      }
-
-      // Look for DOM or page content in other properties
-      if (action.page || action.dom || action.snapshot) {
-        htmlSnapshots.push({
-          timestamp: action.timestamp || action.startTime,
-          monotonicTime: action.monotonicTime,
-          html: action.page || action.dom || action.snapshot,
-          actionTitle: action.title,
-          source: 'page_dom_snapshot'
-        });
-        // console.log(`Found HTML in page/dom/snapshot property for action: ${action.title}`);
-
-        // Check if we've found enough after adding this one
-        if (htmlSnapshots.length >= numSnapshots) {
-          return true; // Signal to stop processing
-        }
-      }
-
-      // Search in children if they exist and we haven't found enough snapshots
-      if (action.children && action.children.length > 0 && htmlSnapshots.length < numSnapshots) {
-        const shouldStop = findHtml(action.children, depth + 1);
-        if (shouldStop) {
-          return true; // Propagate the stop signal up
-        }
-      }
-    }
-
-    return false; // Continue processing
-  }
-
-  // If looking for 3 HTML snapshots:
-  // - Finds 1st HTML action → continues
-  // - Finds 2nd HTML action → continues  
-  // - Finds 3rd HTML action → STOPS immediately
-  // - Never processes remaining actions/children
-  findHtml(sortedRootActions);
-
-  console.log(`Found ${htmlSnapshots.length} HTML snapshots (stopped after finding ${numSnapshots} or reaching end)`);
-
-  return htmlSnapshots;
-}
-
 async function analyzeTrace(zipPath) {
   let prompt; let completion;
 
   const subfolder = path.dirname(zipPath);
   const rootActions = await generateTraceHtmlReport(zipPath, path.join(subfolder, 'trace.html'));
 
+  // Sort rootActions by timestamp (latest first) before processing
+  const latestFirstRootActions = [...rootActions].sort((a, b) => {
+    const timeA = a.timestamp || a.startTime || a.monotonicTime || 0;
+    const timeB = b.timestamp || b.startTime || b.monotonicTime || 0;
+    return timeB - timeA;
+  });
+
+
   // Extract context options from the trace
-  const contextOptions = extractContextOptions(rootActions);
+  const contextOptions = extractContextOptions(latestFirstRootActions);
+
+  const stackTrace = composeStackTraceFromFirstError(latestFirstRootActions);
 
   const traceInfo = JSON.stringify(
     rootActions
@@ -399,6 +239,8 @@ async function analyzeFolder(folderPath) {
   }
   return results;
 }
+
+
 
 /**
  * Generate a single HTML report from a Playwright trace.zip or unzipped trace folder.
@@ -668,7 +510,6 @@ async function generateTraceHtmlReport(zipOrFolderPath, outputHtmlPath) {
         sortedEntries.forEach(entry => traceContainer.appendChild(entry));
 
         sortLatestBtn.classList.toggle('active', isLatestFirst);
-        sortEarliestBtn.classList.toggle('active', !isLatestFirst);
         filterBtns.forEach(btn => btn.classList.toggle('active', String(currentFilter) === btn.dataset.filter));
         
         updateExpandCollapseButtons();
@@ -783,6 +624,368 @@ if (require.main === module) {
       process.exit(1);
     }
   })();
+}
+
+
+async function analyzeHtmlSnapshots(htmlSnapshots) {
+
+  // Prepare HTML content for LLM analysis
+  let htmlContentForLLM = '';
+  htmlSnapshots.forEach((snapshot, index) => {
+    console.log(`\n=== HTML Snapshot ${index + 1} ===`);
+    console.log(`Source: ${snapshot.source}`);
+    console.log(`Action: ${snapshot.actionTitle}`);
+
+    htmlContentForLLM += `\n=== HTML Snapshot ${index + 1} ===\n`;
+    htmlContentForLLM += `Source: ${snapshot.source}\n`;
+    htmlContentForLLM += `Action: ${snapshot.actionTitle}\n`;
+    htmlContentForLLM += `Timestamp: ${snapshot.timestamp}\n`;
+
+    if (snapshot.html) {
+      const htmlString = JSON.stringify(snapshot.html, null, 2);
+      console.log('HTML DOM:', htmlString);
+      htmlContentForLLM += `HTML Content:\n${htmlString}\n`;
+    }
+    if (snapshot.attachment) {
+      console.log('Attachment:', snapshot.attachment);
+      htmlContentForLLM += `Attachment: ${JSON.stringify(snapshot.attachment, null, 2)}\n`;
+    }
+    htmlContentForLLM += '\n' + '='.repeat(50) + '\n';
+  });
+
+  // Send HTML content to LLM for analysis
+  if (htmlContentForLLM.trim()) {
+    console.log('\nSending HTML content to LLM for analysis...');
+
+    const htmlAnalysis = await ai.generate({
+      system: `You are an expert web developer and UI/UX analyst. Analyze the provided HTML content and describe:
+1. What page or screen is being displayed
+2. Key UI elements visible (buttons, forms, inputs, text, etc.)
+3. Any error messages, warnings, or issues visible on the page
+4. The overall state of the application
+5. Any loading states, modals, or overlays present
+6. Form validation states or error indicators
+7. Navigation elements and their state
+
+Be concise but thorough in your analysis. Focus on identifying any problems or errors that might indicate test failures.`,
+      prompt: `Please analyze the following HTML content from a Playwright test trace and describe what you see. 
+      Pay special attention to any errors, warnings, or issues that might be visible on the page:
+      
+      ${htmlContentForLLM}`,
+      messages: [],
+      maxTurns: 1
+    });
+
+    const analysis = htmlAnalysis.messages[htmlAnalysis.messages.length - 1].content[0].text;
+    console.log('\n=== LLM HTML Analysis ===');
+    console.log(analysis);
+  }
+}
+
+// Function to extract HTML content from rootActions
+function extractHtmlSnapshots(latestFirstRootActions, numSnapshots = 3) {
+  const htmlSnapshots = [];
+
+  // Recursively search through all actions and their children for HTML content
+  function findHtml(actions, depth = 0) {
+    for (const action of actions) {
+      // Stop if we already found enough snapshots
+      if (htmlSnapshots.length >= numSnapshots) {
+        return true; // Signal to stop processing
+      }
+
+      // Debug: log action types and properties to understand the structure
+      if (depth === 0) {
+        // console.log(`Action type: ${action.type}, title: ${action.title}`);
+        if (action.type !== 'action') {
+          // console.log(`Non-action properties:`, Object.keys(action));
+        }
+      }
+
+      // Look for HTML content in various possible locations
+      if (action.html) {
+        htmlSnapshots.push({
+          timestamp: action.timestamp || action.startTime,
+          monotonicTime: action.monotonicTime,
+          html: action.html,
+          actionTitle: action.title,
+          source: 'direct_html'
+        });
+        // console.log(`Found HTML in direct property for action: ${action.title}`);
+
+        // Check if we've found enough after adding this one
+        if (htmlSnapshots.length >= numSnapshots) {
+          return true; // Signal to stop processing
+        }
+      }
+
+      // Look for HTML content in attachments
+      if (action.attachments) {
+        for (const attachment of action.attachments) {
+          if (htmlSnapshots.length >= numSnapshots) {
+            return true; // Signal to stop processing
+          }
+
+          // console.log(`Checking attachment: ${attachment.name}, contentType: ${attachment.contentType}`);
+          if (attachment.name === 'trace' ||
+            attachment.name === 'dom-snapshot' ||
+            attachment.name === 'page' ||
+            (attachment.contentType && attachment.contentType.includes('html')) ||
+            (attachment.contentType && attachment.contentType.includes('json'))) {
+            htmlSnapshots.push({
+              timestamp: action.timestamp || action.startTime,
+              monotonicTime: action.monotonicTime,
+              attachment: attachment,
+              actionTitle: action.title,
+              source: 'attachment'
+            });
+            // console.log(`Found HTML attachment: ${attachment.name}`);
+
+            // Check if we've found enough after adding this one
+            if (htmlSnapshots.length >= numSnapshots) {
+              return true; // Signal to stop processing
+            }
+          }
+        }
+      }
+
+      // Look for DOM or page content in other properties
+      if (action.page || action.dom || action.snapshot) {
+        htmlSnapshots.push({
+          timestamp: action.timestamp || action.startTime,
+          monotonicTime: action.monotonicTime,
+          html: action.page || action.dom || action.snapshot,
+          actionTitle: action.title,
+          source: 'page_dom_snapshot'
+        });
+        // console.log(`Found HTML in page/dom/snapshot property for action: ${action.title}`);
+
+        // Check if we've found enough after adding this one
+        if (htmlSnapshots.length >= numSnapshots) {
+          return true; // Signal to stop processing
+        }
+      }
+
+      // Search in children if they exist and we haven't found enough snapshots
+      if (action.children && action.children.length > 0 && htmlSnapshots.length < numSnapshots) {
+        const shouldStop = findHtml(action.children, depth + 1);
+        if (shouldStop) {
+          return true; // Propagate the stop signal up
+        }
+      }
+    }
+
+    return false; // Continue processing
+  }
+
+  // If looking for 3 HTML snapshots:
+  // - Finds 1st HTML action → continues
+  // - Finds 2nd HTML action → continues  
+  // - Finds 3rd HTML action → STOPS immediately
+  // - Never processes remaining actions/children
+  findHtml(latestFirstRootActions);
+
+  console.log(`Found ${htmlSnapshots.length} HTML snapshots (stopped after finding ${numSnapshots} or reaching end)`);
+
+  return htmlSnapshots;
+}
+
+/**
+ * Compose a stack trace from the first error found in latestFirstRootActions.
+ * This function searches through the actions to find the first error and formats it
+ * as a readable stack trace similar to TimeoutError format.
+ * @param {Array} latestFirstRootActions - Array of root actions sorted by latest first
+ * @returns {string} Formatted stack trace or message if no error found
+ */
+function composeStackTraceFromFirstError(latestFirstRootActions) {
+  // Helper function to recursively search for errors in actions and their children
+  function findFirstError(actions) {
+    for (const action of actions) {
+      // Check if this action has an error
+      if (action.error) {
+        return {
+          action: action,
+          error: action.error
+        };
+      }
+
+      // Recursively check children
+      if (action.children && action.children.length > 0) {
+        const childError = findFirstError(action.children);
+        if (childError) {
+          return childError;
+        }
+      }
+    }
+    return null;
+  }
+
+  // Find the first error in the actions
+  const errorResult = findFirstError(latestFirstRootActions);
+
+  if (!errorResult) {
+    return "No errors found in trace data.";
+  }
+
+  const { action, error } = errorResult;
+
+  // DEBUG: Log the error and action structure
+  console.log('DEBUG - Error object:', JSON.stringify(error, null, 2));
+  console.log('DEBUG - Action object keys:', Object.keys(action));
+  console.log('DEBUG - Action stack:', JSON.stringify(action.stack, null, 2));
+  console.log('DEBUG - Action title:', action.title);
+  console.log('DEBUG - Action params:', JSON.stringify(action.params, null, 2));
+
+  // Extract error details
+  const errorMessage = error.message || 'Unknown error';
+  const errorStack = error.stack || '';
+
+  // Start building the stack trace
+  let stackTrace = [];
+
+  // Build the complete error message with action context
+  let fullErrorMessage = '';
+
+  // Check if this is a timeout error and construct the proper format
+  if (errorMessage.includes('Timeout') && errorMessage.includes('exceeded')) {
+    // Extract timeout value if present
+    const timeoutMatch = errorMessage.match(/(\d+)ms/);
+    const timeout = timeoutMatch ? timeoutMatch[1] : '30000';
+
+    // Construct the proper TimeoutError format
+    if (action.title) {
+      fullErrorMessage = `TimeoutError: ${action.title}: Timeout ${timeout}ms exceeded.`;
+    } else {
+      fullErrorMessage = errorMessage;
+    }
+  } else {
+    fullErrorMessage = errorMessage;
+  }
+
+  // Remove ANSI escape sequences
+  fullErrorMessage = fullErrorMessage.replace(/\u001b\[[0-9;]*m/g, '');
+  stackTrace.push(fullErrorMessage);
+
+  // Add call log if available in the error stack
+  if (errorStack.includes('Call log:')) {
+    const callLogMatch = errorStack.match(/Call log:([\s\S]*?)(?=\n\s*at|$)/);
+    if (callLogMatch) {
+      stackTrace.push('Call log:');
+      const callLogLines = callLogMatch[1].split('\n');
+      for (const line of callLogLines) {
+        if (line.trim()) {
+          // Clean the line and add proper indentation
+          let cleanLine = line.replace(/\u001b\[[0-9;]*m/g, '').trim();
+          if (cleanLine.startsWith('- ')) {
+            stackTrace.push(`  ${cleanLine}`);
+          } else if (cleanLine) {
+            stackTrace.push(`  - ${cleanLine}`);
+          }
+        }
+      }
+    }
+  } else {
+    // If no call log in error stack, try to construct one from action params
+    if (action.params && action.params.selector) {
+      stackTrace.push('Call log:');
+      let selectorText = action.params.selector;
+
+      // Add additional context based on action type
+      if (action.title && action.title.includes('click')) {
+        if (action.params.options && action.params.options.first) {
+          selectorText += "').first()";
+        }
+        stackTrace.push(`  - waiting for locator('${selectorText}')`);
+      } else if (action.title && action.title.includes('textContent')) {
+        stackTrace.push(`  - waiting for locator('${selectorText}')`);
+      } else {
+        stackTrace.push(`  - waiting for locator('${selectorText}')`);
+      }
+    }
+  }
+
+  // DEBUG: Log the error stack content
+  console.log('DEBUG - Error stack content:');
+  console.log(errorStack);
+  console.log('DEBUG - Error stack lines:');
+  if (errorStack) {
+    const stackLines = errorStack.split('\n');
+    stackLines.forEach((line, index) => {
+      console.log(`  ${index}: "${line}"`);
+    });
+  }
+
+  // Extract and format the stack trace (clean format like the example)
+  // Filter out Playwright internal calls and keep only test-related calls
+  if (errorStack) {
+    // Split by lines and look for stack trace entries (lines starting with "at")
+    const stackLines = errorStack.split('\n');
+    let foundStackTrace = false;
+
+    for (const line of stackLines) {
+      const trimmedLine = line.trim();
+      if (trimmedLine.startsWith('at ')) {
+        // Clean the line and remove ANSI escape sequences
+        let cleanLine = trimmedLine.replace(/\u001b\[[0-9;]*m/g, '');
+
+        console.log(`DEBUG - Checking stack line: "${cleanLine}"`);
+
+        // Filter out Playwright internal calls - keep only test code
+        const isPlaywrightInternal = cleanLine.includes('node_modules/playwright') ||
+          cleanLine.includes('playwright-core/lib') ||
+          cleanLine.includes('/server/') ||
+          cleanLine.includes('/dispatchers/') ||
+          cleanLine.includes('ProgressController') ||
+          cleanLine.includes('FrameDispatcher') ||
+          cleanLine.includes('DispatcherConnection');
+
+        console.log(`DEBUG - Is Playwright internal: ${isPlaywrightInternal}`);
+
+        // Only include test-related stack trace entries
+        if (!isPlaywrightInternal) {
+          if (!foundStackTrace) {
+            stackTrace.push(''); // Add blank line before stack trace
+            foundStackTrace = true;
+          }
+          console.log(`DEBUG - Adding stack trace line: "${cleanLine}"`);
+          stackTrace.push(`    ${cleanLine}`);
+        }
+      }
+    }
+  }
+
+  // If we didn't find any test-related stack trace in the error stack,
+  // try to use the action's stack property
+  if (!stackTrace.some(line => line.trim().startsWith('at ')) && action.stack && Array.isArray(action.stack)) {
+    console.log('DEBUG - Using action.stack as fallback');
+    stackTrace.push(''); // Add blank line
+
+    for (const stackEntry of action.stack) {
+      console.log(`DEBUG - Processing action stack entry:`, stackEntry);
+      if (typeof stackEntry === 'object' && stackEntry.file) {
+        // Filter out Playwright internal files
+        if (!stackEntry.file.includes('node_modules/playwright') &&
+          !stackEntry.file.includes('playwright-core')) {
+          const location = `${stackEntry.file}:${stackEntry.line}:${stackEntry.column}`;
+          const func = stackEntry.function ? ` (${stackEntry.function})` : '';
+          console.log(`DEBUG - Adding action stack entry: "at ${location}${func}"`);
+          stackTrace.push(`    at ${location}${func}`);
+        }
+      } else if (typeof stackEntry === 'string') {
+        // Filter out Playwright internal entries
+        if (!stackEntry.includes('node_modules/playwright') &&
+          !stackEntry.includes('playwright-core')) {
+          console.log(`DEBUG - Adding string stack entry: "${stackEntry}"`);
+          stackTrace.push(`    ${stackEntry}`);
+        }
+      }
+    }
+  }
+
+  console.log('DEBUG - Final stack trace:');
+  console.log(stackTrace.join('\n'));
+
+  return stackTrace.join('\n');
 }
 
 module.exports = { analyzeTrace, analyzeFolder, generateTraceHtmlReport }; 

@@ -178,14 +178,13 @@ function generateStackTraceHash(stackTrace) {
 }
 
 // Function to save context options and stack trace
-function saveAnalysisContext(contextOptions, stackTrace, folderPath) {
+function saveAnalysisContext(analysisResult, folderPath) {
   const contextData = {
-    contextOptions,
-    stackTrace,
-    stackTraceHash: generateStackTraceHash(stackTrace),
+    ...analysisResult, // Save the entire analysis result
+    stackTraceHash: generateStackTraceHash(analysisResult.stackTrace),
     folderPath,
     timestamp: new Date().toISOString(),
-    normalizedStackTrace: normalizeStackTrace(stackTrace)
+    normalizedStackTrace: normalizeStackTrace(analysisResult.stackTrace)
   };
 
   const contextFile = path.join(path.dirname(folderPath), 'analysis_contexts.json');
@@ -217,47 +216,39 @@ function saveAnalysisContext(contextOptions, stackTrace, folderPath) {
 }
 
 // Function to find similar stacktrace in saved contexts
-function findSimilarStackTrace(stackTrace, folderPath) {
-  const currentHash = generateStackTraceHash(stackTrace);
-  const contextFile = path.join(path.dirname(folderPath), 'analysis_contexts.json');
+function findSimilarStackTrace(normalizedStackTrace, folderPath, threshold = 0.8) {
+  const contextsFile = path.join(folderPath, 'analysis_contexts.json');
 
-  if (!fs.existsSync(contextFile)) {
+  if (!fs.existsSync(contextsFile)) {
     return null;
   }
 
   try {
-    const existingData = fs.readFileSync(contextFile, 'utf-8');
-    const contexts = JSON.parse(existingData);
-
-    // Find exact hash match first
-    const exactMatch = contexts.find(context => context.stackTraceHash === currentHash);
-    if (exactMatch) {
-      return {
-        type: 'exact',
-        context: exactMatch,
-        similarity: 1.0
-      };
-    }
-
-    // Find similar stacktraces by comparing normalized versions
-    const currentNormalized = normalizeStackTrace(stackTrace);
+    const contexts = JSON.parse(fs.readFileSync(contextsFile, 'utf-8'));
 
     for (const context of contexts) {
-      const similarity = calculateStackTraceSimilarity(currentNormalized, context.normalizedStackTrace);
-      if (similarity > 0.8) { // 80% similarity threshold
-        return {
-          type: 'similar',
-          context: context,
-          similarity: similarity
-        };
+      if (context.normalizedStackTrace) {
+        const similarity = calculateStackTraceSimilarity(normalizedStackTrace, context.normalizedStackTrace);
+        if (similarity >= threshold) {
+          return {
+            similarity: similarity,
+            // Return the complete analysis result from the context
+            skipped: context.skipped || false,
+            explanation: context.explanation || '',
+            contextOptions: context.contextOptions || {},
+            stackTrace: context.stackTrace || '',
+            folderPath: context.folderPath,
+            timestamp: context.timestamp,
+            stackTraceHash: context.stackTraceHash
+          };
+        }
       }
     }
-
-    return null;
   } catch (error) {
-    console.warn('Failed to load existing contexts for comparison:', error.message);
-    return null;
+    console.error('Error reading analysis contexts:', error);
   }
+
+  return null;
 }
 
 // Function to calculate similarity between two normalized stack traces
@@ -347,43 +338,45 @@ async function analyzeTrace(zipPath) {
 
   const stackTrace = composeStackTraceFromFirstError(traceFolder);
 
-  // Check if we have a similar stacktrace already analyzed
-  const similarMatch = findSimilarStackTrace(stackTrace, subfolder);
+  // Check for similar stacktraces
+  const normalizedStackTrace = normalizeStackTrace(stackTrace);
+  const similarStackTrace = findSimilarStackTrace(normalizedStackTrace, path.dirname(subfolder));
 
-  if (similarMatch) {
-    const matchType = similarMatch.type === 'exact' ? 'identical' : 'similar';
-    const similarityPercent = Math.round(similarMatch.similarity * 100);
+  if (similarStackTrace) {
+    const matchType = similarStackTrace.similarity === 1.0 ? 'identical' : 'similar';
+    const similarityPercentage = Math.round(similarStackTrace.similarity * 100);
 
-    explanation = `
+    // Create explanation string for similar stack trace
+    const explanation = `
 
-    🔍 Found ${matchType} stacktrace (${similarityPercent}% match)
-    ⏭️ Original analysis: ${similarMatch.context.contextOptions.tcs} [${similarMatch.context.folderPath}]
-    ${similarMatch.context.contextOptions.tcs}
-    ${similarMatch.context.explanation}
+    🔍 Found ${matchType} stacktrace (${similarityPercentage}% match)
+    
+    *THIS Stack Trace:*
+    ${stackTrace}
+
+    ⏭️ Original analysis: ${similarStackTrace.contextOptions.tcs} [${similarStackTrace.folderPath}]
+    ${similarStackTrace.contextOptions.tcs}
+    ${similarStackTrace.explanation || 'No detailed explanation available from original analysis.'}
     
     `;
 
     // Clean up temporary folder
     if (traceFolder) {
       fs.rmSync(traceFolder, { recursive: true, force: true });
-      console.log(`\n🧹 Cleaned up temporary folder: ${traceFolder}`);
+      console.log(`🧹 Cleaned up temporary folder: ${traceFolder}`);
     }
 
     return {
       skipped: true,
       explanation: explanation,
-      similarContext: similarMatch.context,
       contextOptions: contextOptions,
-      stackTrace: stackTrace
+      stackTrace: stackTrace,
+      similarContext: similarStackTrace
     };
   }
 
   // No similar stacktrace found, proceed with analysis and save context
   console.log('\n🆕 New stacktrace detected - proceeding with analysis');
-
-  // Save the context for future comparisons
-  const savedContext = saveAnalysisContext(contextOptions, stackTrace, subfolder);
-  console.log(`💾 Saved context with hash: ${savedContext.stackTraceHash.substring(0, 8)}...`);
 
   const traceInfo = JSON.stringify(
     rootActions
@@ -451,11 +444,19 @@ ${stackTrace}
 
   `
 
-  return {
+  const analysisResult = {
     skipped: false,
     explanation: explanation,
     contextOptions: contextOptions,
-    stackTrace: stackTrace,
+    stackTrace: stackTrace
+  };
+
+  // Save the complete analysis result for future comparisons
+  const savedContext = saveAnalysisContext(analysisResult, subfolder);
+  console.log(`💾 Saved context with hash: ${savedContext.stackTraceHash.substring(0, 8)}...`);
+
+  return {
+    ...analysisResult,
     savedContext: savedContext
   };
 }

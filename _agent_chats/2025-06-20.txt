@@ -53,3 +53,9 @@ Extract trace using test.trace from the unzipped folder instead of the rootActio
 
 I want to save the contextOptions and stackTrace. If going through a folder and a similar stacktrace exists, don't reanalyze and just say that it's the same root problem as the saved context options
 save for similarity detection to not query LLM multiple times for same stacktrace
+
+===
+
+Save everything returned by analyzeTrace to be used when retrieving similarity
+
+I'll modify the code to save everything returned by analyzeTrace to be used when retrieving similarity. This means updating the saveAnalysisContext function to store the complete analysis result, not just the contextOptions and stackTrace.

@@ -134,7 +134,9 @@ async function analyzeTrace(zipPath) {
   let prompt; let completion;
 
   const subfolder = path.dirname(zipPath);
-  const rootActions = await generateTraceHtmlReport(zipPath, path.join(subfolder, 'trace.html'));
+  const result = await generateTraceHtmlReport(zipPath, path.join(subfolder, 'trace.html'));
+  const rootActions = result.grouped;
+  const traceFolder = result.traceFolder;
 
   // Sort rootActions by timestamp (latest first) before processing
   const latestFirstRootActions = [...rootActions].sort((a, b) => {
@@ -143,11 +145,10 @@ async function analyzeTrace(zipPath) {
     return timeB - timeA;
   });
 
+  const stackTrace = composeStackTraceFromFirstError(traceFolder);
 
   // Extract context options from the trace
   const contextOptions = extractContextOptions(latestFirstRootActions);
-
-  const stackTrace = composeStackTraceFromFirstError(latestFirstRootActions);
 
   const traceInfo = JSON.stringify(
     rootActions
@@ -179,6 +180,10 @@ async function analyzeTrace(zipPath) {
   // const htmlSnapshots = extractHtmlSnapshots(rootActions, 3);
   // await analyzeHtmlSnapshots(htmlSnapshots);
 
+  if (traceFolder) {
+    fs.rmSync(traceFolder, { recursive: true, force: true });
+    console.log(`Cleaned up temporary folder: ${traceFolder}`);
+  }
 
   return;
 
@@ -239,8 +244,6 @@ async function analyzeFolder(folderPath) {
   }
   return results;
 }
-
-
 
 /**
  * Generate a single HTML report from a Playwright trace.zip or unzipped trace folder.
@@ -579,53 +582,19 @@ async function generateTraceHtmlReport(zipOrFolderPath, outputHtmlPath) {
   // Write the report and clean up
   fs.writeFileSync(outputHtmlPath, html, 'utf-8');
   console.log(`HTML report generated at: ${outputHtmlPath}`);
+
+  // Store trace folder path before cleanup
+  const traceFolderPath = traceFolder;
+
+  /*
   if (tempDir) {
     fs.rmSync(tempDir, { recursive: true, force: true });
     console.log(`Cleaned up temporary folder: ${tempDir}`);
   }
+  */
 
-  return grouped;
+  return { grouped, traceFolder: traceFolderPath };
 }
-
-// CLI interface
-if (require.main === module) {
-  const args = process.argv.slice(2);
-  if (args.length === 0) {
-    console.log('Usage: node analyze_trace.js <trace.zip | folder>');
-    process.exit(1);
-  }
-  (async () => {
-    const target = args[0];
-    if (fs.lstatSync(target).isDirectory()) {
-      const results = await analyzeFolder(target);
-      // Format output for better readability
-      for (const result of results) {
-        console.log('\n' + '='.repeat(80));
-        console.log(`FOLDER: ${result.subfolder}`);
-        console.log('='.repeat(80));
-        if (result.error) {
-          console.log(`ERROR: ${result.error}`);
-        } else if (result.explanation) {
-          console.log(result.explanation);
-        }
-      }
-    } else if (target.endsWith('.zip')) {
-      const result = await analyzeTrace(target);
-      console.log('\n' + '='.repeat(80));
-      console.log('TRACE ANALYSIS RESULT');
-      console.log('='.repeat(80));
-      if (result.error) {
-        console.log(`ERROR: ${result.error}`);
-      } else if (result.explanation) {
-        console.log(result.explanation);
-      }
-    } else {
-      console.error('Invalid input: must be a trace.zip file or a folder containing subfolders with trace.zip');
-      process.exit(1);
-    }
-  })();
-}
-
 
 async function analyzeHtmlSnapshots(htmlSnapshots) {
 
@@ -791,201 +760,284 @@ function extractHtmlSnapshots(latestFirstRootActions, numSnapshots = 3) {
 }
 
 /**
- * Compose a stack trace from the first error found in latestFirstRootActions.
- * This function searches through the actions to find the first error and formats it
- * as a readable stack trace similar to TimeoutError format.
- * @param {Array} latestFirstRootActions - Array of root actions sorted by latest first
+ * Compose a stack trace from the first error found in the test.trace file.
+ * This function reads the trace file directly instead of using rootActions.
+ * @param {string} traceFolder - Path to the trace folder containing test.trace
  * @returns {string} Formatted stack trace or message if no error found
  */
-function composeStackTraceFromFirstError(latestFirstRootActions) {
-  // Helper function to recursively search for errors in actions and their children
-  function findFirstError(actions) {
-    for (const action of actions) {
-      // Check if this action has an error
-      if (action.error) {
-        return {
-          action: action,
-          error: action.error
-        };
+function composeStackTraceFromFirstError(traceFolder) {
+  // Helper function to extract stack trace from test.trace file
+  function extractStackTraceFromTrace(traceFilePath) {
+    if (!fs.existsSync(traceFilePath)) {
+      console.log(`Error: Trace file not found: ${traceFilePath}`);
+      return null;
+    }
+
+    let firstError = null;
+
+    try {
+      const traceContent = fs.readFileSync(traceFilePath, 'utf-8');
+      const lines = traceContent.split('\n');
+
+      for (let lineNum = 0; lineNum < lines.length; lineNum++) {
+        const line = lines[lineNum].trim();
+        if (!line) continue;
+
+        try {
+          const traceEntry = JSON.parse(line);
+
+          // Look for entries with error information
+          if (traceEntry.error && traceEntry.error.message) {
+            const errorInfo = traceEntry.error;
+
+            // This is our first error - extract the information
+            firstError = {
+              lineNumber: lineNum + 1,
+              callId: traceEntry.callId || 'unknown',
+              apiName: traceEntry.apiName || 'unknown',
+              errorMessage: errorInfo.message || '',
+              errorStack: errorInfo.stack || '',
+              params: traceEntry.params || {},
+              stackTrace: traceEntry.stack || []
+            };
+            break;
+          }
+        } catch (jsonError) {
+          // Skip non-JSON lines
+          continue;
+        }
+      }
+    } catch (fileError) {
+      console.log(`Error reading trace file: ${fileError.message}`);
+      return null;
+    }
+
+    return firstError;
+  }
+
+  // Helper function to compose readable stack trace from error information
+  function composeStackTrace(errorInfo) {
+    if (!errorInfo) {
+      return "No error found in trace data.";
+    }
+
+    // Extract the main error message
+    const errorMessage = errorInfo.errorMessage;
+    const errorStack = errorInfo.errorStack;
+
+    // Start composing the stack trace
+    const stackTraceLines = [];
+
+    // Add the main error message
+    if (errorMessage) {
+      // Clean up ANSI escape sequences
+      let cleanMessage = errorMessage
+        .replace(/\u001b\[2m/g, '')
+        .replace(/\u001b\[22m/g, '')
+        .replace(/\u001b\[39m/g, '')
+        .replace(/\u001b\[31m/g, '')
+        .replace(/\u001b\[[0-9;]*m/g, '');
+
+      // Check if this is a timeout error and construct the proper format
+      if (cleanMessage.includes('Timeout') && cleanMessage.includes('exceeded')) {
+        // Extract timeout value if present
+        const timeoutMatch = cleanMessage.match(/(\d+)ms/);
+        const timeout = timeoutMatch ? timeoutMatch[1] : '30000';
+
+        // Construct the proper TimeoutError format
+        if (errorInfo.apiName && errorInfo.apiName !== 'unknown') {
+          cleanMessage = `TimeoutError: ${errorInfo.apiName}: Timeout ${timeout}ms exceeded.`;
+        }
       }
 
-      // Recursively check children
-      if (action.children && action.children.length > 0) {
-        const childError = findFirstError(action.children);
-        if (childError) {
-          return childError;
+      stackTraceLines.push(cleanMessage);
+    }
+
+    // Add call log if available in the error stack
+    if (errorStack && errorStack.includes('Call log:')) {
+      const callLogMatch = errorStack.match(/Call log:([\s\S]*?)(?=\n\s*at|$)/);
+      if (callLogMatch) {
+        stackTraceLines.push('Call log:');
+        const callLogLines = callLogMatch[1].split('\n');
+        for (const line of callLogLines) {
+          if (line.trim()) {
+            // Clean the line and add proper indentation
+            let cleanLine = line.replace(/\u001b\[[0-9;]*m/g, '').trim();
+            if (cleanLine.startsWith('- ')) {
+              stackTraceLines.push(`  ${cleanLine}`);
+            } else if (cleanLine) {
+              stackTraceLines.push(`  - ${cleanLine}`);
+            }
+          }
+        }
+      }
+    } else {
+      // If no call log in error stack, try to construct one from params
+      if (errorInfo.params && errorInfo.params.selector) {
+        stackTraceLines.push('Call log:');
+        let selectorText = errorInfo.params.selector;
+
+        // Add additional context based on API name
+        if (errorInfo.apiName && errorInfo.apiName.includes('click')) {
+          if (errorInfo.params.options && errorInfo.params.options.first) {
+            selectorText += "').first()";
+          }
+          stackTraceLines.push(`  - waiting for locator('${selectorText}')`);
+        } else if (errorInfo.apiName && errorInfo.apiName.includes('textContent')) {
+          stackTraceLines.push(`  - waiting for locator('${selectorText}')`);
+        } else {
+          stackTraceLines.push(`  - waiting for locator('${selectorText}')`);
         }
       }
     }
-    return null;
+
+    // Extract and format the stack trace (clean format)
+    // Filter out Playwright internal calls and keep only test-related calls
+    if (errorStack) {
+      // Split by lines and look for stack trace entries (lines starting with "at")
+      const stackLines = errorStack.split('\n');
+      let foundStackTrace = false;
+
+      for (const line of stackLines) {
+        const trimmedLine = line.trim();
+        if (trimmedLine.startsWith('at ')) {
+          // Clean the line and remove ANSI escape sequences
+          let cleanLine = trimmedLine.replace(/\u001b\[[0-9;]*m/g, '');
+
+          // Filter out Playwright internal calls - keep only test code
+          const isPlaywrightInternal = false;
+          /*
+          DO NOT DELETE THIS COMMENT
+          cleanLine.includes('node_modules/playwright') ||
+            cleanLine.includes('playwright-core/lib') ||
+            cleanLine.includes('/server/') ||
+            cleanLine.includes('/dispatchers/') ||
+            cleanLine.includes('ProgressController') ||
+            cleanLine.includes('FrameDispatcher') ||
+            cleanLine.includes('DispatcherConnection');
+          */
+
+          // Only include test-related stack trace entries
+          if (!isPlaywrightInternal) {
+            if (!foundStackTrace) {
+              stackTraceLines.push(''); // Add blank line before stack trace
+              foundStackTrace = true;
+            }
+            stackTraceLines.push(`    ${cleanLine}`);
+          }
+        }
+      }
+    }
+
+    // If we didn't find any test-related stack trace in the error stack,
+    // try to use the trace entry's stack property
+    if (!stackTraceLines.some(line => line.trim().startsWith('at ')) && errorInfo.stackTrace && Array.isArray(errorInfo.stackTrace)) {
+      stackTraceLines.push(''); // Add blank line
+
+      for (const stackEntry of errorInfo.stackTrace) {
+        if (typeof stackEntry === 'object' && stackEntry.file) {
+          // Filter out Playwright internal files
+          if (!stackEntry.file.includes('node_modules/playwright') &&
+            !stackEntry.file.includes('playwright-core')) {
+            const location = `${stackEntry.file}:${stackEntry.line}:${stackEntry.column}`;
+            const func = stackEntry.function ? ` (${stackEntry.function})` : '';
+            stackTraceLines.push(`    at ${location}${func}`);
+          }
+        } else if (typeof stackEntry === 'string') {
+          // Filter out Playwright internal entries
+          if (!stackEntry.includes('node_modules/playwright') &&
+            !stackEntry.includes('playwright-core')) {
+            stackTraceLines.push(`    ${stackEntry}`);
+          }
+        }
+      }
+    }
+
+    return stackTraceLines.join('\n');
   }
 
-  // Find the first error in the actions
-  const errorResult = findFirstError(latestFirstRootActions);
+  // Determine the trace file path
+  let traceFilePath;
+  if (typeof traceFolder === 'string') {
+    // Find the main trace file (e.g., trace.trace or test.trace)
+    let traceFile = 'test.trace';
+    if (!fs.existsSync(path.join(traceFolder, traceFile))) {
+      traceFile = 'trace.trace';
+      if (!fs.existsSync(path.join(traceFolder, traceFile))) {
+        const foundFiles = fs.readdirSync(traceFolder).filter(f => f.endsWith('.trace'));
+        if (foundFiles.length > 0) {
+          traceFile = foundFiles[0];
+        } else {
+          return "No .trace file found in the trace folder.";
+        }
+      }
+    }
+    traceFilePath = path.join(traceFolder, traceFile);
+  } else {
+    // Legacy support: if traceFolder is actually rootActions, return message
+    return "Legacy rootActions parameter detected. Please use trace folder path instead.";
+  }
 
-  if (!errorResult) {
+  // console.log(`DEBUG - Reading trace file: ${traceFilePath}`);
+
+  // Extract the first error from the trace file
+  const errorInfo = extractStackTraceFromTrace(traceFilePath);
+
+  if (!errorInfo) {
     return "No errors found in trace data.";
   }
 
-  const { action, error } = errorResult;
+  // console.log(`DEBUG - First error found at line ${errorInfo.lineNumber} in trace:`);
+  // console.log(`DEBUG - API Call: ${errorInfo.apiName}`);
+  // console.log(`DEBUG - Call ID: ${errorInfo.callId}`);
+  // console.log(`DEBUG - Error message: ${errorInfo.errorMessage}`);
 
-  // DEBUG: Log the error and action structure
-  console.log('DEBUG - Error object:', JSON.stringify(error, null, 2));
-  console.log('DEBUG - Action object keys:', Object.keys(action));
-  console.log('DEBUG - Action stack:', JSON.stringify(action.stack, null, 2));
-  console.log('DEBUG - Action title:', action.title);
-  console.log('DEBUG - Action params:', JSON.stringify(action.params, null, 2));
+  // Compose and return the stack trace
+  const stackTrace = composeStackTrace(errorInfo);
 
-  // Extract error details
-  const errorMessage = error.message || 'Unknown error';
-  const errorStack = error.stack || '';
+  // console.log('DEBUG - Final composed stack trace:');
+  // console.log(stackTrace);
 
-  // Start building the stack trace
-  let stackTrace = [];
+  return stackTrace;
+}
 
-  // Build the complete error message with action context
-  let fullErrorMessage = '';
-
-  // Check if this is a timeout error and construct the proper format
-  if (errorMessage.includes('Timeout') && errorMessage.includes('exceeded')) {
-    // Extract timeout value if present
-    const timeoutMatch = errorMessage.match(/(\d+)ms/);
-    const timeout = timeoutMatch ? timeoutMatch[1] : '30000';
-
-    // Construct the proper TimeoutError format
-    if (action.title) {
-      fullErrorMessage = `TimeoutError: ${action.title}: Timeout ${timeout}ms exceeded.`;
+// CLI interface
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  if (args.length === 0) {
+    console.log('Usage: node analyze_trace.js <trace.zip | folder>');
+    process.exit(1);
+  }
+  (async () => {
+    const target = args[0];
+    if (fs.lstatSync(target).isDirectory()) {
+      const results = await analyzeFolder(target);
+      // Format output for better readability
+      for (const result of results) {
+        console.log('\n' + '='.repeat(80));
+        console.log(`FOLDER: ${result.subfolder}`);
+        console.log('='.repeat(80));
+        if (result.error) {
+          console.log(`ERROR: ${result.error}`);
+        } else if (result.explanation) {
+          console.log(result.explanation);
+        }
+      }
+    } else if (target.endsWith('.zip')) {
+      const result = await analyzeTrace(target);
+      console.log('\n' + '='.repeat(80));
+      console.log('TRACE ANALYSIS RESULT');
+      console.log('='.repeat(80));
+      if (result.error) {
+        console.log(`ERROR: ${result.error}`);
+      } else if (result.explanation) {
+        console.log(result.explanation);
+      }
     } else {
-      fullErrorMessage = errorMessage;
+      console.error('Invalid input: must be a trace.zip file or a folder containing subfolders with trace.zip');
+      process.exit(1);
     }
-  } else {
-    fullErrorMessage = errorMessage;
-  }
-
-  // Remove ANSI escape sequences
-  fullErrorMessage = fullErrorMessage.replace(/\u001b\[[0-9;]*m/g, '');
-  stackTrace.push(fullErrorMessage);
-
-  // Add call log if available in the error stack
-  if (errorStack.includes('Call log:')) {
-    const callLogMatch = errorStack.match(/Call log:([\s\S]*?)(?=\n\s*at|$)/);
-    if (callLogMatch) {
-      stackTrace.push('Call log:');
-      const callLogLines = callLogMatch[1].split('\n');
-      for (const line of callLogLines) {
-        if (line.trim()) {
-          // Clean the line and add proper indentation
-          let cleanLine = line.replace(/\u001b\[[0-9;]*m/g, '').trim();
-          if (cleanLine.startsWith('- ')) {
-            stackTrace.push(`  ${cleanLine}`);
-          } else if (cleanLine) {
-            stackTrace.push(`  - ${cleanLine}`);
-          }
-        }
-      }
-    }
-  } else {
-    // If no call log in error stack, try to construct one from action params
-    if (action.params && action.params.selector) {
-      stackTrace.push('Call log:');
-      let selectorText = action.params.selector;
-
-      // Add additional context based on action type
-      if (action.title && action.title.includes('click')) {
-        if (action.params.options && action.params.options.first) {
-          selectorText += "').first()";
-        }
-        stackTrace.push(`  - waiting for locator('${selectorText}')`);
-      } else if (action.title && action.title.includes('textContent')) {
-        stackTrace.push(`  - waiting for locator('${selectorText}')`);
-      } else {
-        stackTrace.push(`  - waiting for locator('${selectorText}')`);
-      }
-    }
-  }
-
-  // DEBUG: Log the error stack content
-  console.log('DEBUG - Error stack content:');
-  console.log(errorStack);
-  console.log('DEBUG - Error stack lines:');
-  if (errorStack) {
-    const stackLines = errorStack.split('\n');
-    stackLines.forEach((line, index) => {
-      console.log(`  ${index}: "${line}"`);
-    });
-  }
-
-  // Extract and format the stack trace (clean format like the example)
-  // Filter out Playwright internal calls and keep only test-related calls
-  if (errorStack) {
-    // Split by lines and look for stack trace entries (lines starting with "at")
-    const stackLines = errorStack.split('\n');
-    let foundStackTrace = false;
-
-    for (const line of stackLines) {
-      const trimmedLine = line.trim();
-      if (trimmedLine.startsWith('at ')) {
-        // Clean the line and remove ANSI escape sequences
-        let cleanLine = trimmedLine.replace(/\u001b\[[0-9;]*m/g, '');
-
-        console.log(`DEBUG - Checking stack line: "${cleanLine}"`);
-
-        // Filter out Playwright internal calls - keep only test code
-        const isPlaywrightInternal = cleanLine.includes('node_modules/playwright') ||
-          cleanLine.includes('playwright-core/lib') ||
-          cleanLine.includes('/server/') ||
-          cleanLine.includes('/dispatchers/') ||
-          cleanLine.includes('ProgressController') ||
-          cleanLine.includes('FrameDispatcher') ||
-          cleanLine.includes('DispatcherConnection');
-
-        console.log(`DEBUG - Is Playwright internal: ${isPlaywrightInternal}`);
-
-        // Only include test-related stack trace entries
-        if (!isPlaywrightInternal) {
-          if (!foundStackTrace) {
-            stackTrace.push(''); // Add blank line before stack trace
-            foundStackTrace = true;
-          }
-          console.log(`DEBUG - Adding stack trace line: "${cleanLine}"`);
-          stackTrace.push(`    ${cleanLine}`);
-        }
-      }
-    }
-  }
-
-  // If we didn't find any test-related stack trace in the error stack,
-  // try to use the action's stack property
-  if (!stackTrace.some(line => line.trim().startsWith('at ')) && action.stack && Array.isArray(action.stack)) {
-    console.log('DEBUG - Using action.stack as fallback');
-    stackTrace.push(''); // Add blank line
-
-    for (const stackEntry of action.stack) {
-      console.log(`DEBUG - Processing action stack entry:`, stackEntry);
-      if (typeof stackEntry === 'object' && stackEntry.file) {
-        // Filter out Playwright internal files
-        if (!stackEntry.file.includes('node_modules/playwright') &&
-          !stackEntry.file.includes('playwright-core')) {
-          const location = `${stackEntry.file}:${stackEntry.line}:${stackEntry.column}`;
-          const func = stackEntry.function ? ` (${stackEntry.function})` : '';
-          console.log(`DEBUG - Adding action stack entry: "at ${location}${func}"`);
-          stackTrace.push(`    at ${location}${func}`);
-        }
-      } else if (typeof stackEntry === 'string') {
-        // Filter out Playwright internal entries
-        if (!stackEntry.includes('node_modules/playwright') &&
-          !stackEntry.includes('playwright-core')) {
-          console.log(`DEBUG - Adding string stack entry: "${stackEntry}"`);
-          stackTrace.push(`    ${stackEntry}`);
-        }
-      }
-    }
-  }
-
-  console.log('DEBUG - Final stack trace:');
-  console.log(stackTrace.join('\n'));
-
-  return stackTrace.join('\n');
+  })();
 }
 
 module.exports = { analyzeTrace, analyzeFolder, generateTraceHtmlReport }; 

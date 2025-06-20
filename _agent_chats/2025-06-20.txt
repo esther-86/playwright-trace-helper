@@ -47,3 +47,4 @@ The trace should be something like
 You're absolutely right! The function is extracting the internal Playwright stack trace instead of the test code stack trace. The issue is that the error stack in the trace data contains both the internal Playwright framework calls and the actual test code calls, but we need to filter out the Playwright internals and show only the test-related stack trace.
 Let me fix this by modifying the function to extract the correct stack trace:
 
+Extract trace using test.trace from the unzipped folder instead of the rootActions. Convert extract_stack_trace.py to composeStackTraceFromFirstError
